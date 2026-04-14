@@ -9,13 +9,34 @@ from ultralytics import YOLO
 
 
 class PoseDetector:
-    def __init__(self, model_name='yolo11n-pose.pt', device=None, conf=0.3):
+    def __init__(self, model_name='yolo26x-pose.pt', device=None, conf=0.3,
+                 crop_model_name='yolo11n-pose.pt'):
         if device is None:
             import torch
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model = YOLO(model_name)
+        # Use lighter model for crop passes (3 crops per frame) to save GPU memory
+        self.crop_model = YOLO(crop_model_name)
         self.device = device
         self.conf = conf
+
+    def _run_crop_model(self, frame, conf):
+        """Run the lighter crop model."""
+        results = self.crop_model(frame, device=self.device, conf=conf, verbose=False)
+        detections = []
+        for r in results:
+            if r.keypoints is None or r.boxes is None:
+                continue
+            boxes = r.boxes.xyxy.cpu().numpy()
+            scores = r.boxes.conf.cpu().numpy()
+            kps = r.keypoints.data.cpu().numpy()
+            for i in range(len(boxes)):
+                detections.append({
+                    'bbox': boxes[i],
+                    'keypoints': kps[i],
+                    'score': float(scores[i]),
+                })
+        return detections
 
     def _run_model(self, frame, conf):
         """Run YOLO on a single image, return raw detections."""
@@ -159,7 +180,7 @@ class PoseDetector:
             ch, cw = crop.shape[:2]
             crop_up = cv2.resize(crop, (cw * crop_scale, ch * crop_scale),
                                  interpolation=cv2.INTER_CUBIC)
-            crop_dets = self._run_model(crop_up, conf)
+            crop_dets = self._run_crop_model(crop_up, conf)
 
             # Map back to original coordinates
             for det in crop_dets:

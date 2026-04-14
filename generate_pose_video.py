@@ -87,7 +87,7 @@ def main():
 
     # Pose detection with motion continuity tracking
     print('Detecting players...')
-    det = PoseDetector(conf=0.1)
+    det = PoseDetector(model_name='yolo26x-pose.pt', crop_model_name='yolo11n-pose.pt', conf=0.1)
     tracker = PlayerTracker(det, hold_frames=75, max_disp_near=120, max_disp_far=60)
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
