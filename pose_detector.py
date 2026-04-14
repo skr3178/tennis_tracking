@@ -248,6 +248,7 @@ class PlayerTracker:
 
         # State per player
         self._last = {'near': None, 'far': None}
+        self._prev = {'near': None, 'far': None}  # detection from 2 frames ago (for velocity)
         self._age = {'near': 0, 'far': 0}   # frames since last real detection
 
     @staticmethod
@@ -255,36 +256,48 @@ class PlayerTracker:
         b = det['bbox']
         return np.array([(b[0] + b[2]) / 2, (b[1] + b[3]) / 2])
 
-    def _pick_best_candidate(self, candidates, last, max_disp, age):
+    def _pick_best_candidate(self, candidates, last, prev, max_disp, age):
         """
-        From a list of candidates, pick the one closest to last known position
-        that is within the allowed displacement. Returns (detection, accepted)
-        where accepted is True if a real detection was picked.
+        From a list of candidates, pick the one closest to the predicted
+        position (based on velocity from last two frames). Falls back to
+        closest to last position if no velocity info.
+
+        Returns (detection, accepted) where accepted=True if picked.
         """
         if not candidates:
             return None, False
 
         if last is None:
             # No history — pick the candidate most likely to be an actual
-            # player: wider bbox and lower in frame (higher y), not the
-            # narrow stationary umpire.
+            # player: wider bbox and lower in frame (higher y).
             best_init = max(candidates, key=lambda c: (
                 c['bbox'][2] - c['bbox'][0],  # prefer wider
                 (c['bbox'][1] + c['bbox'][3]) / 2,  # prefer lower y
             ))
             return best_init, True
 
-        # Score each candidate by distance to last known position
         last_center = self._bbox_center(last)
         allowed = max_disp * (age + 1)
 
+        # Predict position using velocity if we have 2 frames of history
+        if prev is not None and age == 0:
+            prev_center = self._bbox_center(prev)
+            velocity = last_center - prev_center
+            predicted = last_center + velocity
+        else:
+            predicted = last_center
+
+        # Pick candidate closest to predicted position within allowed range
         best = None
         best_dist = float('inf')
         for c in candidates:
-            dist = np.linalg.norm(self._bbox_center(c) - last_center)
-            if dist <= allowed and dist < best_dist:
+            c_center = self._bbox_center(c)
+            dist_to_pred = np.linalg.norm(c_center - predicted)
+            dist_to_last = np.linalg.norm(c_center - last_center)
+            # Must be within displacement range of last position
+            if dist_to_last <= allowed and dist_to_pred < best_dist:
                 best = c
-                best_dist = dist
+                best_dist = dist_to_pred
 
         if best is not None:
             return best, True
@@ -348,18 +361,20 @@ class PlayerTracker:
             self._last[role] = None
             self._age[role] = 0
 
-        # --- Far player (multiple candidates, pick by proximity) ---
+        # --- Far player (multiple candidates, pick by proximity + velocity) ---
         role = 'far'
         max_disp = self.max_disp_far
         candidates = raw.get('far_candidates', [])
         last = self._last[role]
+        prev = self._prev[role]
 
         best, accepted = self._pick_best_candidate(
-            candidates, last, max_disp, self._age[role])
+            candidates, last, prev, max_disp, self._age[role])
 
         if accepted:
             best['held'] = False
             result[role] = best
+            self._prev[role] = self._last[role]
             self._last[role] = best
             self._age[role] = 0
         elif last is not None and self._age[role] < self.hold_frames:
@@ -370,13 +385,18 @@ class PlayerTracker:
         else:
             # No candidates and hold expired — accept best score as reset
             if candidates:
-                pick = candidates[0]
+                pick = max(candidates, key=lambda c: (
+                    c['bbox'][2] - c['bbox'][0],
+                    (c['bbox'][1] + c['bbox'][3]) / 2,
+                ))
                 pick['held'] = False
                 result[role] = pick
+                self._prev[role] = None
                 self._last[role] = pick
                 self._age[role] = 0
             else:
                 result[role] = None
+                self._prev[role] = None
                 self._last[role] = None
                 self._age[role] = 0
 
