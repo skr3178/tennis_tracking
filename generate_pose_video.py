@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, 'tennis-tracking')
 ORIG_DIR = os.getcwd()
 
-from pose_detector import PoseDetector, SKELETON_CONNECTIONS
+from pose_detector import PoseDetector, PlayerTracker, SKELETON_CONNECTIONS
 
 VIDEO = 'Original_HL_clip.mp4'
 OUTPUT = 'pose_estimation_output.mp4'
@@ -85,9 +85,10 @@ def main():
     os.chdir(ORIG_DIR)
     print(f'  Court tracked, {len(cd.game_warp_matrix)} matrices')
 
-    # Pose detection with court filtering
+    # Pose detection with motion continuity tracking
     print('Detecting players...')
     det = PoseDetector(conf=0.1)
+    tracker = PlayerTracker(det, hold_frames=5, max_disp_near=120, max_disp_far=60)
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter('_temp_pose.mp4', fourcc, fps, (w, h))
@@ -97,13 +98,14 @@ def main():
 
     for i in range(len(frames)):
         frame = frames[i].copy()
-        gwm = cd.game_warp_matrix[i] if i < len(cd.game_warp_matrix) else None
 
-        players = det.detect_players(frame, game_warp_matrix=None, conf=0.1)
+        players = tracker.update(frame, conf=0.1)
 
-        # Draw
-        draw_player(frame, players['far'], FAR_COLOR, '#1 Far')
-        draw_player(frame, players['near'], NEAR_COLOR, '#2 Near')
+        # Draw (dim held detections slightly)
+        far_color = (30, 130, 160) if players.get('far') and players['far'].get('held') else FAR_COLOR
+        near_color = (0, 130, 0) if players.get('near') and players['near'].get('held') else NEAR_COLOR
+        draw_player(frame, players['far'], far_color, '#1 Far')
+        draw_player(frame, players['near'], near_color, '#2 Near')
 
         # Status text
         status = f'Frame: {i}'

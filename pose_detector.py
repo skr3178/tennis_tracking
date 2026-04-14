@@ -219,6 +219,104 @@ class PoseDetector:
         return np.array([(det['bbox'][0] + det['bbox'][2]) / 2, det['bbox'][3]])
 
 
+class PlayerTracker:
+    """
+    Wraps PoseDetector with motion continuity tracking.
+
+    For each player (near/far):
+    - If a detection is found close to the last known position, accept it.
+    - If multiple candidates, pick the closest to last known position.
+    - If no detection this frame, hold the last known detection for up
+      to `hold_frames` frames.
+    - Max displacement per frame limits how far a player can "jump".
+    """
+    def __init__(self, detector, hold_frames=5, max_disp_near=120, max_disp_far=60):
+        self.detector = detector
+        self.hold_frames = hold_frames
+        self.max_disp_near = max_disp_near  # near player moves more pixels/frame
+        self.max_disp_far = max_disp_far    # far player moves fewer (perspective)
+
+        # State per player
+        self._last = {'near': None, 'far': None}
+        self._age = {'near': 0, 'far': 0}   # frames since last real detection
+
+    @staticmethod
+    def _bbox_center(det):
+        b = det['bbox']
+        return np.array([(b[0] + b[2]) / 2, (b[1] + b[3]) / 2])
+
+    def update(self, frame, conf=None):
+        """
+        Detect players in frame with motion continuity.
+
+        Returns:
+            dict with 'near' and 'far' keys, each a detection dict or None.
+            Detections have an extra 'held' key (True if reusing last frame's
+            detection because no new one was found).
+        """
+        raw = self.detector.detect_players(frame, conf=conf)
+        result = {}
+
+        for role in ['near', 'far']:
+            max_disp = self.max_disp_near if role == 'near' else self.max_disp_far
+            candidate = raw[role]
+            last = self._last[role]
+
+            if candidate is not None and last is not None:
+                # Check distance from last known position
+                dist = np.linalg.norm(self._bbox_center(candidate) - self._bbox_center(last))
+                if dist <= max_disp * (self._age[role] + 1):
+                    # Accept — within expected range
+                    candidate['held'] = False
+                    result[role] = candidate
+                    self._last[role] = candidate
+                    self._age[role] = 0
+                else:
+                    # Too far — probably a different person, hold last
+                    if self._age[role] < self.hold_frames:
+                        held = self._copy_det(last)
+                        held['held'] = True
+                        result[role] = held
+                        self._age[role] += 1
+                    else:
+                        # Hold expired, accept the new detection as a reset
+                        candidate['held'] = False
+                        result[role] = candidate
+                        self._last[role] = candidate
+                        self._age[role] = 0
+
+            elif candidate is not None:
+                # First detection or after a long gap — accept
+                candidate['held'] = False
+                result[role] = candidate
+                self._last[role] = candidate
+                self._age[role] = 0
+
+            elif last is not None and self._age[role] < self.hold_frames:
+                # No detection but we have recent history — hold
+                held = self._copy_det(last)
+                held['held'] = True
+                result[role] = held
+                self._age[role] += 1
+
+            else:
+                # No detection and hold expired
+                result[role] = None
+                self._last[role] = None
+                self._age[role] = 0
+
+        return result
+
+    @staticmethod
+    def _copy_det(det):
+        """Shallow copy a detection dict."""
+        return {
+            'bbox': det['bbox'].copy(),
+            'keypoints': det['keypoints'].copy(),
+            'score': det['score'],
+        }
+
+
 # Skeleton connections for drawing
 SKELETON_CONNECTIONS = [
     (0, 1), (0, 2), (1, 3), (2, 4),           # head
