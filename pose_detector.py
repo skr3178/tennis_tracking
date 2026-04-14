@@ -207,28 +207,17 @@ class PoseDetector:
             if not is_dup:
                 deduped.append(d)
 
-        # Filter for actual far player (not umpire)
+        # Filter far candidates: at least 5 visible keypoints
         far_candidates = []
         for d in deduped:
             vis = np.sum(d['keypoints'][:, 2] > 0.3)
-            if vis < 5:
-                continue
-            bw = d['bbox'][2] - d['bbox'][0]
-            cy = (d['bbox'][1] + d['bbox'][3]) / 2
-            cx = (d['bbox'][0] + d['bbox'][2]) / 2
-            # Exclude chair umpire: always at ~(cx=395, cy=108), narrow (~24px).
-            # Use a tight exclusion zone rather than broad size filters.
-            is_umpire = (bw < 30 and cy < h * 0.16) or (abs(cx - 395) < 30 and abs(cy - 108) < 20)
-            if not is_umpire and bw > 28 and cy > h * 0.12:
+            if vis >= 5:
                 far_candidates.append(d)
 
-        # Pick best-scoring as far player
-        far = None
-        if far_candidates:
-            far_candidates.sort(key=lambda d: d['score'], reverse=True)
-            far = far_candidates[0]
+        # Sort by score descending
+        far_candidates.sort(key=lambda d: d['score'], reverse=True)
 
-        return {'near': near, 'far': far}
+        return {'near': near, 'far_candidates': far_candidates}
 
     @staticmethod
     def _get_foot_position(det):
@@ -266,9 +255,45 @@ class PlayerTracker:
         b = det['bbox']
         return np.array([(b[0] + b[2]) / 2, (b[1] + b[3]) / 2])
 
+    def _pick_best_candidate(self, candidates, last, max_disp, age):
+        """
+        From a list of candidates, pick the one closest to last known position
+        that is within the allowed displacement. Returns (detection, accepted)
+        where accepted is True if a real detection was picked.
+        """
+        if not candidates:
+            return None, False
+
+        if last is None:
+            # No history — pick highest score
+            return candidates[0], True
+
+        # Score each candidate by distance to last known position
+        last_center = self._bbox_center(last)
+        allowed = max_disp * (age + 1)
+
+        best = None
+        best_dist = float('inf')
+        for c in candidates:
+            dist = np.linalg.norm(self._bbox_center(c) - last_center)
+            if dist <= allowed and dist < best_dist:
+                best = c
+                best_dist = dist
+
+        if best is not None:
+            return best, True
+
+        # No candidate within range — return None (will trigger hold)
+        return None, False
+
     def update(self, frame, conf=None):
         """
         Detect players in frame with motion continuity.
+
+        Near player: single candidate from detect_players.
+        Far player: multiple candidates — pick closest to last known position.
+        This naturally rejects the umpire since they're stationary and far
+        from the actual player's last position.
 
         Returns:
             dict with 'near' and 'far' keys, each a detection dict or None.
@@ -278,50 +303,73 @@ class PlayerTracker:
         raw = self.detector.detect_players(frame, conf=conf)
         result = {}
 
-        for role in ['near', 'far']:
-            max_disp = self.max_disp_near if role == 'near' else self.max_disp_far
-            candidate = raw[role]
-            last = self._last[role]
+        # --- Near player (single candidate) ---
+        role = 'near'
+        max_disp = self.max_disp_near
+        candidate = raw.get('near')
+        last = self._last[role]
 
-            if candidate is not None and last is not None:
-                # Check distance from last known position
-                dist = np.linalg.norm(self._bbox_center(candidate) - self._bbox_center(last))
-                if dist <= max_disp * (self._age[role] + 1):
-                    # Accept — within expected range
-                    candidate['held'] = False
-                    result[role] = candidate
-                    self._last[role] = candidate
-                    self._age[role] = 0
-                else:
-                    # Too far — probably a different person, hold last
-                    if self._age[role] < self.hold_frames:
-                        held = self._copy_det(last)
-                        held['held'] = True
-                        result[role] = held
-                        self._age[role] += 1
-                    else:
-                        # Hold expired, accept the new detection as a reset
-                        candidate['held'] = False
-                        result[role] = candidate
-                        self._last[role] = candidate
-                        self._age[role] = 0
-
-            elif candidate is not None:
-                # First detection or after a long gap — accept
+        if candidate is not None and last is not None:
+            dist = np.linalg.norm(self._bbox_center(candidate) - self._bbox_center(last))
+            if dist <= max_disp * (self._age[role] + 1):
                 candidate['held'] = False
                 result[role] = candidate
                 self._last[role] = candidate
                 self._age[role] = 0
-
-            elif last is not None and self._age[role] < self.hold_frames:
-                # No detection but we have recent history — hold
-                held = self._copy_det(last)
-                held['held'] = True
-                result[role] = held
-                self._age[role] += 1
-
             else:
-                # No detection and hold expired
+                if self._age[role] < self.hold_frames:
+                    held = self._copy_det(last)
+                    held['held'] = True
+                    result[role] = held
+                    self._age[role] += 1
+                else:
+                    candidate['held'] = False
+                    result[role] = candidate
+                    self._last[role] = candidate
+                    self._age[role] = 0
+        elif candidate is not None:
+            candidate['held'] = False
+            result[role] = candidate
+            self._last[role] = candidate
+            self._age[role] = 0
+        elif last is not None and self._age[role] < self.hold_frames:
+            held = self._copy_det(last)
+            held['held'] = True
+            result[role] = held
+            self._age[role] += 1
+        else:
+            result[role] = None
+            self._last[role] = None
+            self._age[role] = 0
+
+        # --- Far player (multiple candidates, pick by proximity) ---
+        role = 'far'
+        max_disp = self.max_disp_far
+        candidates = raw.get('far_candidates', [])
+        last = self._last[role]
+
+        best, accepted = self._pick_best_candidate(
+            candidates, last, max_disp, self._age[role])
+
+        if accepted:
+            best['held'] = False
+            result[role] = best
+            self._last[role] = best
+            self._age[role] = 0
+        elif last is not None and self._age[role] < self.hold_frames:
+            held = self._copy_det(last)
+            held['held'] = True
+            result[role] = held
+            self._age[role] += 1
+        else:
+            # No candidates and hold expired — accept best score as reset
+            if candidates:
+                pick = candidates[0]
+                pick['held'] = False
+                result[role] = pick
+                self._last[role] = pick
+                self._age[role] = 0
+            else:
                 result[role] = None
                 self._last[role] = None
                 self._age[role] = 0
