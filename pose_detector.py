@@ -268,12 +268,16 @@ class PlayerTracker:
             return None, False
 
         if last is None:
-            # No history — pick the candidate most likely to be an actual
-            # player: wider bbox and lower in frame (higher y).
-            best_init = max(candidates, key=lambda c: (
-                c['bbox'][2] - c['bbox'][0],  # prefer wider
-                (c['bbox'][1] + c['bbox'][3]) / 2,  # prefer lower y
-            ))
+            # No history — pick the candidate most likely to be the actual
+            # far player. Prefer candidates that are:
+            # - in the lower part of the crop (higher y = on court baseline)
+            # - have reasonable width (player, not a thin sign or wide crowd)
+            # Filter to only candidates with cy > 130 (on court, not in crowd)
+            on_court = [c for c in candidates
+                        if (c['bbox'][1] + c['bbox'][3]) / 2 > 130]
+            pool = on_court if on_court else candidates
+            # From the pool, pick the one with highest y (most on-court)
+            best_init = max(pool, key=lambda c: (c['bbox'][1] + c['bbox'][3]) / 2)
             return best_init, True
 
         last_center = self._bbox_center(last)
@@ -383,11 +387,12 @@ class PlayerTracker:
             result[role] = held
             self._age[role] += 1
         else:
-            # No candidates and hold expired — accept best score as reset
+            # No candidates and hold expired — reset with best court-center pick
             if candidates:
-                pick = max(candidates, key=lambda c: (
-                    c['bbox'][2] - c['bbox'][0],
-                    (c['bbox'][1] + c['bbox'][3]) / 2,
+                frame_cx = 640
+                pick = min(candidates, key=lambda c: (
+                    abs((c['bbox'][0] + c['bbox'][2]) / 2 - frame_cx) * 2
+                    - (c['bbox'][1] + c['bbox'][3]) / 2
                 ))
                 pick['held'] = False
                 result[role] = pick
