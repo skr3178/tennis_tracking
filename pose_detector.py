@@ -194,9 +194,11 @@ class PoseDetector:
                 continue
             bw = d['bbox'][2] - d['bbox'][0]
             cy = (d['bbox'][1] + d['bbox'][3]) / 2
-            # Umpire is very narrow (~24px) and high up (cy ~108).
-            # Actual player is wider (>30px) and lower (cy > h*0.15).
-            if bw > 30 and cy > h * 0.15:
+            cx = (d['bbox'][0] + d['bbox'][2]) / 2
+            # Exclude chair umpire: always at ~(cx=395, cy=108), narrow (~24px).
+            # Use a tight exclusion zone rather than broad size filters.
+            is_umpire = (bw < 30 and cy < h * 0.16) or (abs(cx - 395) < 30 and abs(cy - 108) < 20)
+            if not is_umpire and bw > 28 and cy > h * 0.12:
                 far_candidates.append(d)
 
         # Pick best-scoring as far player
