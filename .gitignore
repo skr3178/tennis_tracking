@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Model weights & checkpoints
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.onnx
+
+# Large downloaded repos
+GEM-X/
+
+# Test outputs
+test_*.png
+
+# OpenCV / video outputs
+*.mp4
+
+# Claude Code
+.claude/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.csv
+*.gif
+*.tflite
+
+# Nested git repos
+TrackNet/.git/
+tennis-tracking/.git/
+tennis-tracking/.github/
+
+# Large dirs in subprojects
+tennis-tracking/VideoInput/
+tennis-tracking/VideoOutput/
+tennis-tracking/WeightsTracknet/
+tennis-tracking/Models/
+tennis-tracking/Bounces/
+tennis-tracking/TrackPlayers/
+tennis-tracking/convert/
+
+# Badminton (separate project)
+badminton/
