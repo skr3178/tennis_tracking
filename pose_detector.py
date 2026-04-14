@@ -265,8 +265,14 @@ class PlayerTracker:
             return None, False
 
         if last is None:
-            # No history — pick highest score
-            return candidates[0], True
+            # No history — pick the candidate most likely to be an actual
+            # player: wider bbox and lower in frame (higher y), not the
+            # narrow stationary umpire.
+            best_init = max(candidates, key=lambda c: (
+                c['bbox'][2] - c['bbox'][0],  # prefer wider
+                (c['bbox'][1] + c['bbox'][3]) / 2,  # prefer lower y
+            ))
+            return best_init, True
 
         # Score each candidate by distance to last known position
         last_center = self._bbox_center(last)
