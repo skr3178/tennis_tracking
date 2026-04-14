@@ -1,5 +1,7 @@
 """
 YOLO11-Pose wrapper for player detection + 17-keypoint skeleton estimation.
+Includes dual-pass detection (full frame + crop for far player) and
+court-area filtering to reject spectators/ball boys.
 """
 import cv2
 import numpy as np
@@ -24,7 +26,7 @@ class PoseDetector:
                 continue
             boxes = r.boxes.xyxy.cpu().numpy()
             scores = r.boxes.conf.cpu().numpy()
-            kps = r.keypoints.data.cpu().numpy()  # (N, 17, 3)
+            kps = r.keypoints.data.cpu().numpy()
             for i in range(len(boxes)):
                 detections.append({
                     'bbox': boxes[i],
@@ -34,15 +36,7 @@ class PoseDetector:
         return detections
 
     def detect(self, frame, conf=None):
-        """
-        Detect people in frame.
-
-        Returns:
-            list of dicts with:
-                'bbox': np.array [x1, y1, x2, y2]
-                'keypoints': np.array (17, 3) — x, y, confidence
-                'score': float
-        """
+        """Single-pass detection."""
         if conf is None:
             conf = self.conf
         detections = self._run_model(frame, conf)
@@ -51,18 +45,11 @@ class PoseDetector:
 
     def detect_dual_pass(self, frame, conf=None, crop_scale=4):
         """
-        Two-pass detection: full frame for near player, cropped+upscaled top
-        region for the far player who is too small for direct detection.
-
-        Pass 1: full frame → near player (bottom half of court)
+        Two-pass detection:
+        Pass 1: full frame → near player
         Pass 2: tight crop of far court area, upscale 4x → far player
 
-        The crop must be small enough that after upscaling, the player still
-        fills a meaningful portion of the YOLO input (640px). A tight crop
-        of ~170x400px upscaled 4x → 680x1600 works well.
-
-        Returns:
-            list of dicts (same format as detect()), deduplicated
+        Returns deduplicated list of detections.
         """
         if conf is None:
             conf = self.conf
@@ -72,7 +59,6 @@ class PoseDetector:
         full_dets = self._run_model(frame, conf)
 
         # Pass 2: tight crop of far court area and upscale
-        # Far player is typically in y=[8%..32%], x=[27%..58%] of frame
         y_start = int(h * 0.08)
         y_end = int(h * 0.32)
         x_start = int(w * 0.27)
@@ -97,13 +83,11 @@ class PoseDetector:
         for cd in crop_dets:
             cx = (cd['bbox'][0] + cd['bbox'][2]) / 2
             cy = (cd['bbox'][1] + cd['bbox'][3]) / 2
-            # Only add if not overlapping with an existing detection
             overlaps = False
             for fd in all_dets:
                 fx = (fd['bbox'][0] + fd['bbox'][2]) / 2
                 fy = (fd['bbox'][1] + fd['bbox'][3]) / 2
                 if abs(cx - fx) < 50 and abs(cy - fy) < 50:
-                    # If crop detection has higher score, replace
                     if cd['score'] > fd['score']:
                         fd['bbox'] = cd['bbox']
                         fd['keypoints'] = cd['keypoints']
@@ -115,6 +99,88 @@ class PoseDetector:
 
         all_dets.sort(key=lambda d: d['score'], reverse=True)
         return all_dets
+
+    def detect_players(self, frame, game_warp_matrix=None, conf=None):
+        """
+        Detect exactly 2 players (near and far) using separate strategies:
+        - Near player: from full-frame pass, filtered to lower court area
+        - Far player: from crop pass only (crop already targets far court area)
+
+        Returns:
+            dict with 'near' and 'far' keys, each containing a detection dict
+            or None if that player wasn't found.
+        """
+        if conf is None:
+            conf = self.conf
+        h, w = frame.shape[:2]
+
+        # --- Near player: full-frame detection ---
+        full_dets = self._run_model(frame, conf)
+        # Filter: at least 5 visible keypoints, in the lower-center court area
+        near_candidates = []
+        for d in full_dets:
+            vis = np.sum(d['keypoints'][:, 2] > 0.3)
+            if vis < 5:
+                continue
+            cx = (d['bbox'][0] + d['bbox'][2]) / 2
+            cy = (d['bbox'][1] + d['bbox'][3]) / 2
+            bh = d['bbox'][3] - d['bbox'][1]
+            # Near player is in lower half of frame, center x, and reasonably tall
+            if cy > h * 0.45 and w * 0.15 < cx < w * 0.85 and bh > 60:
+                d['_cy'] = cy
+                near_candidates.append(d)
+
+        # Pick the one with highest y and best score
+        near = None
+        if near_candidates:
+            # Sort by y (highest first), then by score
+            near_candidates.sort(key=lambda d: (d['_cy'], d['score']), reverse=True)
+            near = near_candidates[0]
+            near.pop('_cy', None)
+            for d in near_candidates[1:]:
+                d.pop('_cy', None)
+
+        # --- Far player: crop pass only ---
+        y_start = int(h * 0.08)
+        y_end = int(h * 0.32)
+        x_start = int(w * 0.27)
+        x_end = int(w * 0.58)
+        crop = frame[y_start:y_end, x_start:x_end]
+        ch, cw = crop.shape[:2]
+        crop_scale = 4
+        crop_up = cv2.resize(crop, (cw * crop_scale, ch * crop_scale),
+                             interpolation=cv2.INTER_CUBIC)
+        crop_dets = self._run_model(crop_up, conf)
+
+        # Map back to original coordinates
+        for det in crop_dets:
+            det['bbox'][0] = det['bbox'][0] / crop_scale + x_start
+            det['bbox'][1] = det['bbox'][1] / crop_scale + y_start
+            det['bbox'][2] = det['bbox'][2] / crop_scale + x_start
+            det['bbox'][3] = det['bbox'][3] / crop_scale + y_start
+            det['keypoints'][:, 0] = det['keypoints'][:, 0] / crop_scale + x_start
+            det['keypoints'][:, 1] = det['keypoints'][:, 1] / crop_scale + y_start
+
+        # Filter crop detections: at least 5 keypoints
+        far_candidates = [d for d in crop_dets
+                          if np.sum(d['keypoints'][:, 2] > 0.3) >= 5]
+
+        # Pick best-scoring crop detection as far player
+        far = None
+        if far_candidates:
+            far_candidates.sort(key=lambda d: d['score'], reverse=True)
+            far = far_candidates[0]
+
+        return {'near': near, 'far': far}
+
+    @staticmethod
+    def _get_foot_position(det):
+        """Get foot position from a detection (average of visible ankles or bbox bottom)."""
+        kps = det['keypoints']
+        ankles = [kps[j] for j in [15, 16] if kps[j, 2] > 0.3]
+        if ankles:
+            return np.mean([a[:2] for a in ankles], axis=0)
+        return np.array([(det['bbox'][0] + det['bbox'][2]) / 2, det['bbox'][3]])
 
 
 # Skeleton connections for drawing
@@ -132,7 +198,7 @@ SKELETON_CONNECTIONS = [
 
 if __name__ == '__main__':
     import sys
-    video_path = sys.argv[1] if len(sys.argv) > 1 else 'Tennis_original.mp4'
+    video_path = sys.argv[1] if len(sys.argv) > 1 else 'Original_HL_clip.mp4'
 
     cap = cv2.VideoCapture(video_path)
     ret, frame = cap.read()
@@ -142,8 +208,8 @@ if __name__ == '__main__':
         sys.exit(1)
 
     print(f'Frame shape: {frame.shape}')
-    detector = PoseDetector()
-    detections = detector.detect(frame)
+    detector = PoseDetector(conf=0.1)
+    detections = detector.detect_dual_pass(frame, conf=0.1)
     print(f'Detected {len(detections)} people')
 
     for i, det in enumerate(detections):
@@ -152,22 +218,3 @@ if __name__ == '__main__':
         print(f'  Person {i}: bbox=[{bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f}] '
               f'score={det["score"]:.2f} '
               f'keypoints_visible={np.sum(kps[:, 2] > 0.3)}/17')
-
-    # Draw result
-    out = frame.copy()
-    colors = [(0, 255, 0), (0, 200, 200), (255, 0, 0), (255, 0, 255)]
-    for i, det in enumerate(detections):
-        color = colors[i % len(colors)]
-        bbox = det['bbox'].astype(int)
-        cv2.rectangle(out, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
-        kps = det['keypoints']
-        for j in range(17):
-            if kps[j, 2] > 0.3:
-                cv2.circle(out, (int(kps[j, 0]), int(kps[j, 1])), 3, color, -1)
-        for a, b in SKELETON_CONNECTIONS:
-            if kps[a, 2] > 0.3 and kps[b, 2] > 0.3:
-                cv2.line(out, (int(kps[a, 0]), int(kps[a, 1])),
-                         (int(kps[b, 0]), int(kps[b, 1])), color, 2)
-
-    cv2.imwrite('test_pose_detector.png', out)
-    print('Saved test_pose_detector.png')

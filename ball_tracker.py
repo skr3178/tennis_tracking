@@ -1,11 +1,13 @@
 """
 TrackNet wrapper for tennis ball detection.
 Uses 3-frame temporal input (9 channels) and heatmap-based detection.
+Includes outlier removal, gap-aware interpolation, and trajectory smoothing.
 """
 import sys
 import cv2
 import numpy as np
 import torch
+from scipy.signal import savgol_filter
 
 sys.path.insert(0, 'TrackNet')
 from model import BallTrackerNet
@@ -64,17 +66,61 @@ class BallTracker:
 
         return positions
 
-    def interpolate_positions(self, positions, max_gap=10):
+    def remove_outliers(self, positions, max_jump=120):
+        """
+        Remove positions that jump too far from their neighbors.
+        A position is an outlier if it jumps > max_jump pixels from BOTH
+        the previous and next valid positions.
+        """
+        result = list(positions)
+        n = len(result)
+
+        for i in range(1, n - 1):
+            if result[i] is None:
+                continue
+            # Find previous valid
+            prev = None
+            for j in range(i - 1, max(i - 6, -1), -1):
+                if result[j] is not None:
+                    prev = result[j]
+                    break
+            # Find next valid
+            nxt = None
+            for j in range(i + 1, min(i + 6, n)):
+                if result[j] is not None:
+                    nxt = result[j]
+                    break
+
+            if prev is not None:
+                d_prev = np.hypot(result[i][0] - prev[0], result[i][1] - prev[1])
+            else:
+                d_prev = 0
+            if nxt is not None:
+                d_next = np.hypot(result[i][0] - nxt[0], result[i][1] - nxt[1])
+            else:
+                d_next = 0
+
+            # Outlier if it jumps far from both neighbors
+            if prev is not None and nxt is not None:
+                if d_prev > max_jump and d_next > max_jump:
+                    result[i] = None
+            elif prev is not None and d_prev > max_jump * 1.5:
+                result[i] = None
+
+        return result
+
+    def interpolate_positions(self, positions, max_gap=10, max_interp_dist=200):
         """
         Fill gaps in ball positions with linear interpolation.
-        Only fills gaps smaller than max_gap frames.
+        Only fills gaps smaller than max_gap frames AND where the
+        endpoints are within max_interp_dist pixels of each other.
+        This prevents wild diagonal lines across the court.
         """
         result = list(positions)
         n = len(result)
         i = 0
         while i < n:
             if result[i] is None:
-                # Find gap end
                 j = i
                 while j < n and result[j] is None:
                     j += 1
@@ -82,12 +128,48 @@ class BallTracker:
                 if gap <= max_gap and i > 0 and j < n:
                     x1, y1 = result[i - 1]
                     x2, y2 = result[j]
-                    for k in range(i, j):
-                        t = (k - i + 1) / (gap + 1)
-                        result[k] = (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
+                    dist = np.hypot(x2 - x1, y2 - y1)
+                    # Only interpolate if endpoints are close enough
+                    if dist < max_interp_dist:
+                        for k in range(i, j):
+                            t = (k - i + 1) / (gap + 1)
+                            result[k] = (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
                 i = j
             else:
                 i += 1
+        return result
+
+    def smooth_positions(self, positions, window=5, poly=2):
+        """
+        Smooth ball positions using Savitzky-Golay filter.
+        Operates on contiguous runs of detections separately to avoid
+        smoothing across gaps.
+        """
+        result = list(positions)
+        n = len(result)
+
+        # Find contiguous runs
+        i = 0
+        while i < n:
+            if result[i] is None:
+                i += 1
+                continue
+            # Start of a run
+            j = i
+            while j < n and result[j] is not None:
+                j += 1
+            run_len = j - i
+
+            if run_len >= window:
+                xs = np.array([result[k][0] for k in range(i, j)])
+                ys = np.array([result[k][1] for k in range(i, j)])
+                xs_smooth = savgol_filter(xs, window, poly)
+                ys_smooth = savgol_filter(ys, window, poly)
+                for k in range(i, j):
+                    result[k] = (float(xs_smooth[k - i]), float(ys_smooth[k - i]))
+
+            i = j
+
         return result
 
 
