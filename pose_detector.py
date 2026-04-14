@@ -125,8 +125,8 @@ class PoseDetector:
             cx = (d['bbox'][0] + d['bbox'][2]) / 2
             cy = (d['bbox'][1] + d['bbox'][3]) / 2
             bh = d['bbox'][3] - d['bbox'][1]
-            # Near player is in lower half of frame, center x, and reasonably tall
-            if cy > h * 0.45 and w * 0.15 < cx < w * 0.85 and bh > 60:
+            # Near player is in lower portion of frame, within court x-range
+            if cy > h * 0.30 and w * 0.10 < cx < w * 0.90 and bh > 40:
                 d['_cy'] = cy
                 near_candidates.append(d)
 
@@ -140,32 +140,66 @@ class PoseDetector:
             for d in near_candidates[1:]:
                 d.pop('_cy', None)
 
-        # --- Far player: crop pass only ---
+        # --- Far player: multiple tight crop passes ---
+        # The far player can be anywhere along the far baseline.
+        # A single wide crop dilutes resolution. Instead, run 3 overlapping
+        # tight crops (left, center, right) at 4x upscale.
+        crop_scale = 4
         y_start = int(h * 0.08)
         y_end = int(h * 0.32)
-        x_start = int(w * 0.27)
-        x_end = int(w * 0.58)
-        crop = frame[y_start:y_end, x_start:x_end]
-        ch, cw = crop.shape[:2]
-        crop_scale = 4
-        crop_up = cv2.resize(crop, (cw * crop_scale, ch * crop_scale),
-                             interpolation=cv2.INTER_CUBIC)
-        crop_dets = self._run_model(crop_up, conf)
+        crop_regions = [
+            (int(w * 0.10), int(w * 0.42)),   # left third
+            (int(w * 0.27), int(w * 0.58)),   # center third
+            (int(w * 0.50), int(w * 0.82)),   # right third
+        ]
 
-        # Map back to original coordinates
-        for det in crop_dets:
-            det['bbox'][0] = det['bbox'][0] / crop_scale + x_start
-            det['bbox'][1] = det['bbox'][1] / crop_scale + y_start
-            det['bbox'][2] = det['bbox'][2] / crop_scale + x_start
-            det['bbox'][3] = det['bbox'][3] / crop_scale + y_start
-            det['keypoints'][:, 0] = det['keypoints'][:, 0] / crop_scale + x_start
-            det['keypoints'][:, 1] = det['keypoints'][:, 1] / crop_scale + y_start
+        all_crop_dets = []
+        for x_start, x_end in crop_regions:
+            crop = frame[y_start:y_end, x_start:x_end]
+            ch, cw = crop.shape[:2]
+            crop_up = cv2.resize(crop, (cw * crop_scale, ch * crop_scale),
+                                 interpolation=cv2.INTER_CUBIC)
+            crop_dets = self._run_model(crop_up, conf)
 
-        # Filter crop detections: at least 5 keypoints
-        far_candidates = [d for d in crop_dets
-                          if np.sum(d['keypoints'][:, 2] > 0.3) >= 5]
+            # Map back to original coordinates
+            for det in crop_dets:
+                det['bbox'][0] = det['bbox'][0] / crop_scale + x_start
+                det['bbox'][1] = det['bbox'][1] / crop_scale + y_start
+                det['bbox'][2] = det['bbox'][2] / crop_scale + x_start
+                det['bbox'][3] = det['bbox'][3] / crop_scale + y_start
+                det['keypoints'][:, 0] = det['keypoints'][:, 0] / crop_scale + x_start
+                det['keypoints'][:, 1] = det['keypoints'][:, 1] / crop_scale + y_start
+            all_crop_dets.extend(crop_dets)
 
-        # Pick best-scoring crop detection as far player
+        # Deduplicate overlapping crop detections (keep highest score)
+        deduped = []
+        for d in sorted(all_crop_dets, key=lambda x: x['score'], reverse=True):
+            cx = (d['bbox'][0] + d['bbox'][2]) / 2
+            cy = (d['bbox'][1] + d['bbox'][3]) / 2
+            is_dup = False
+            for existing in deduped:
+                ex = (existing['bbox'][0] + existing['bbox'][2]) / 2
+                ey = (existing['bbox'][1] + existing['bbox'][3]) / 2
+                if abs(cx - ex) < 40 and abs(cy - ey) < 40:
+                    is_dup = True
+                    break
+            if not is_dup:
+                deduped.append(d)
+
+        # Filter for actual far player (not umpire)
+        far_candidates = []
+        for d in deduped:
+            vis = np.sum(d['keypoints'][:, 2] > 0.3)
+            if vis < 5:
+                continue
+            bw = d['bbox'][2] - d['bbox'][0]
+            cy = (d['bbox'][1] + d['bbox'][3]) / 2
+            # Umpire is very narrow (~24px) and high up (cy ~108).
+            # Actual player is wider (>30px) and lower (cy > h*0.15).
+            if bw > 30 and cy > h * 0.15:
+                far_candidates.append(d)
+
+        # Pick best-scoring as far player
         far = None
         if far_candidates:
             far_candidates.sort(key=lambda d: d['score'], reverse=True)
