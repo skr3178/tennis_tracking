@@ -125,8 +125,8 @@ class PoseDetector:
             cx = (d['bbox'][0] + d['bbox'][2]) / 2
             cy = (d['bbox'][1] + d['bbox'][3]) / 2
             bh = d['bbox'][3] - d['bbox'][1]
-            # Near player is in lower portion of frame, within court x-range
-            if cy > h * 0.30 and w * 0.10 < cx < w * 0.90 and bh > 40:
+            # Near player is in the court area, not in the top banner/crowd
+            if cy > h * 0.22 and w * 0.10 < cx < w * 0.90 and bh > 40:
                 d['_cy'] = cy
                 near_candidates.append(d)
 

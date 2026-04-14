@@ -88,7 +88,7 @@ def main():
     # Pose detection with motion continuity tracking
     print('Detecting players...')
     det = PoseDetector(conf=0.1)
-    tracker = PlayerTracker(det, hold_frames=5, max_disp_near=120, max_disp_far=60)
+    tracker = PlayerTracker(det, hold_frames=75, max_disp_near=120, max_disp_far=60)
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter('_temp_pose.mp4', fourcc, fps, (w, h))
