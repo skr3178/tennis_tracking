@@ -15,18 +15,8 @@ class PoseDetector:
         self.device = device
         self.conf = conf
 
-    def detect(self, frame, conf=None):
-        """
-        Detect people in frame.
-
-        Returns:
-            list of dicts with:
-                'bbox': np.array [x1, y1, x2, y2]
-                'keypoints': np.array (17, 3) — x, y, confidence
-                'score': float
-        """
-        if conf is None:
-            conf = self.conf
+    def _run_model(self, frame, conf):
+        """Run YOLO on a single image, return raw detections."""
         results = self.model(frame, device=self.device, conf=conf, verbose=False)
         detections = []
         for r in results:
@@ -41,8 +31,90 @@ class PoseDetector:
                     'keypoints': kps[i],
                     'score': float(scores[i]),
                 })
+        return detections
+
+    def detect(self, frame, conf=None):
+        """
+        Detect people in frame.
+
+        Returns:
+            list of dicts with:
+                'bbox': np.array [x1, y1, x2, y2]
+                'keypoints': np.array (17, 3) — x, y, confidence
+                'score': float
+        """
+        if conf is None:
+            conf = self.conf
+        detections = self._run_model(frame, conf)
         detections.sort(key=lambda d: d['score'], reverse=True)
         return detections
+
+    def detect_dual_pass(self, frame, conf=None, crop_scale=4):
+        """
+        Two-pass detection: full frame for near player, cropped+upscaled top
+        region for the far player who is too small for direct detection.
+
+        Pass 1: full frame → near player (bottom half of court)
+        Pass 2: tight crop of far court area, upscale 4x → far player
+
+        The crop must be small enough that after upscaling, the player still
+        fills a meaningful portion of the YOLO input (640px). A tight crop
+        of ~170x400px upscaled 4x → 680x1600 works well.
+
+        Returns:
+            list of dicts (same format as detect()), deduplicated
+        """
+        if conf is None:
+            conf = self.conf
+        h, w = frame.shape[:2]
+
+        # Pass 1: full frame
+        full_dets = self._run_model(frame, conf)
+
+        # Pass 2: tight crop of far court area and upscale
+        # Far player is typically in y=[8%..32%], x=[27%..58%] of frame
+        y_start = int(h * 0.08)
+        y_end = int(h * 0.32)
+        x_start = int(w * 0.27)
+        x_end = int(w * 0.58)
+        crop = frame[y_start:y_end, x_start:x_end]
+        ch, cw = crop.shape[:2]
+        crop_up = cv2.resize(crop, (cw * crop_scale, ch * crop_scale),
+                             interpolation=cv2.INTER_CUBIC)
+        crop_dets = self._run_model(crop_up, conf)
+
+        # Map crop detections back to original frame coordinates
+        for det in crop_dets:
+            det['bbox'][0] = det['bbox'][0] / crop_scale + x_start
+            det['bbox'][1] = det['bbox'][1] / crop_scale + y_start
+            det['bbox'][2] = det['bbox'][2] / crop_scale + x_start
+            det['bbox'][3] = det['bbox'][3] / crop_scale + y_start
+            det['keypoints'][:, 0] = det['keypoints'][:, 0] / crop_scale + x_start
+            det['keypoints'][:, 1] = det['keypoints'][:, 1] / crop_scale + y_start
+
+        # Merge: keep all full-frame dets, add crop dets that don't overlap
+        all_dets = list(full_dets)
+        for cd in crop_dets:
+            cx = (cd['bbox'][0] + cd['bbox'][2]) / 2
+            cy = (cd['bbox'][1] + cd['bbox'][3]) / 2
+            # Only add if not overlapping with an existing detection
+            overlaps = False
+            for fd in all_dets:
+                fx = (fd['bbox'][0] + fd['bbox'][2]) / 2
+                fy = (fd['bbox'][1] + fd['bbox'][3]) / 2
+                if abs(cx - fx) < 50 and abs(cy - fy) < 50:
+                    # If crop detection has higher score, replace
+                    if cd['score'] > fd['score']:
+                        fd['bbox'] = cd['bbox']
+                        fd['keypoints'] = cd['keypoints']
+                        fd['score'] = cd['score']
+                    overlaps = True
+                    break
+            if not overlaps:
+                all_dets.append(cd)
+
+        all_dets.sort(key=lambda d: d['score'], reverse=True)
+        return all_dets
 
 
 # Skeleton connections for drawing
