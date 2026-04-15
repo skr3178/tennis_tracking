@@ -18,9 +18,14 @@ source .venv/bin/activate
 ### 2. Install dependencies
 
 ```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-pip install ultralytics opencv-python scipy numpy
+# Install PyTorch with CUDA 12.4
+pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 --index-url https://download.pytorch.org/whl/cu124
+
+# Install remaining dependencies
+pip install -r requirements.txt
 ```
+
+Key packages: `ultralytics` (YOLO pose), `opencv-python`, `scipy`, `omegaconf` (WASB config), `filterpy` (tracking). See `requirements.txt` for full list with pinned versions.
 
 ### 3. Model checkpoints
 
