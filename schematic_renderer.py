@@ -87,8 +87,9 @@ class SchematicRenderer:
             sp2 = self._transform_point(p2)
             self.schematic_lines[name] = (sp1, sp2)
 
-        # Pre-compute court surface polygon
-        self.court_poly = self._transform_points(REF_CORNERS)
+        # Pre-compute court surface polygon (reorder to clockwise for proper fill)
+        corners = self._transform_points(REF_CORNERS)
+        self.court_poly = np.array([corners[0], corners[1], corners[3], corners[2]])
 
         # Pre-compute intersection dots
         intersection_pts_ref = set()
@@ -249,7 +250,7 @@ class SchematicRenderer:
     def draw_court(self, canvas):
         """Draw the court surface, lines, upright net band, and intersection dots."""
         # Court surface
-        cv2.fillPoly(canvas, [self.court_poly], COURT_COLOR)
+        cv2.fillConvexPoly(canvas, self.court_poly, COURT_COLOR, cv2.LINE_AA)
 
         # Court lines (except net)
         for name, (p1, p2) in self.schematic_lines.items():

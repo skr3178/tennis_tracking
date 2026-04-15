@@ -1,12 +1,14 @@
 """
 Generate schematic court video with upright player skeletons overlaid.
-Uses court detection for homography, pose detection for players,
-and the schematic renderer for the perspective court view.
+Two-pass pipeline:
+  Pass 1 — detect players and collect camera-space data per frame
+  Pass 2 — smooth positions, compute schematic projections, render
 """
 import sys
 import os
 import cv2
 import numpy as np
+from scipy.signal import savgol_filter
 
 sys.path.insert(0, 'tennis-tracking')
 ORIG_DIR = os.getcwd()
@@ -17,6 +19,67 @@ from schematic_renderer import (SchematicRenderer, NEAR_COLOR, FAR_COLOR,
 
 VIDEO = 'S_Original_HL_clip_cropped.mp4'
 OUTPUT = 'schematic_output.mp4'
+
+SMOOTH_WINDOW = 7
+SMOOTH_POLY = 2
+
+
+def smooth_positions(positions, window=SMOOTH_WINDOW, poly=SMOOTH_POLY):
+    """
+    Smooth a list of (x, y) or None positions using Savitzky-Golay filter.
+    Returns smoothed list with None entries preserved.
+    """
+    n = len(positions)
+    xs = np.array([p[0] if p is not None else np.nan for p in positions])
+    ys = np.array([p[1] if p is not None else np.nan for p in positions])
+
+    valid = ~np.isnan(xs)
+    if np.sum(valid) < window:
+        return positions
+
+    indices = np.arange(n)
+    if np.any(~valid):
+        xs[~valid] = np.interp(indices[~valid], indices[valid], xs[valid])
+        ys[~valid] = np.interp(indices[~valid], indices[valid], ys[valid])
+
+    if len(xs) >= window:
+        xs_smooth = savgol_filter(xs, window, poly)
+        ys_smooth = savgol_filter(ys, window, poly)
+    else:
+        xs_smooth, ys_smooth = xs, ys
+
+    result = []
+    for i in range(n):
+        if positions[i] is not None:
+            result.append((float(xs_smooth[i]), float(ys_smooth[i])))
+        else:
+            result.append(None)
+    return result
+
+
+def prepare_keypoints(det_data, role):
+    """Extract keypoints and foot_cam from a detection, synthesize far-player lower body."""
+    kps = det_data['keypoints'].copy()
+    bbox = det_data['bbox']
+    foot_cam = np.array([(bbox[0] + bbox[2]) / 2, bbox[3]])
+
+    if role == 'far':
+        bbox_cx = (bbox[0] + bbox[2]) / 2
+        bbox_bottom = bbox[3]
+        bbox_h = bbox[3] - bbox[1]
+        synth = {
+            11: (bbox_cx - bbox_h * 0.06, bbox[1] + bbox_h * 0.55),
+            12: (bbox_cx + bbox_h * 0.06, bbox[1] + bbox_h * 0.55),
+            13: (bbox_cx - bbox_h * 0.05, bbox[1] + bbox_h * 0.75),
+            14: (bbox_cx + bbox_h * 0.05, bbox[1] + bbox_h * 0.75),
+            15: (bbox_cx - bbox_h * 0.05, bbox_bottom),
+            16: (bbox_cx + bbox_h * 0.05, bbox_bottom),
+        }
+        for idx, (sx, sy) in synth.items():
+            if kps[idx, 2] < 0.3:
+                kps[idx] = [sx, sy, 0.35]
+
+    return kps, foot_cam
 
 
 def main():
@@ -41,23 +104,17 @@ def main():
             break
         frames.append(frame)
     cap.release()
-    print(f'Read {len(frames)} frames')
+    n_frames = len(frames)
+    print(f'Read {n_frames} frames')
 
-    # Court detection
+    # Court detection — use frame 0 warp for all frames (fixed camera)
     print('Detecting court...')
     os.chdir(os.path.join(ORIG_DIR, 'tennis-tracking'))
     cd = CourtDetector()
     cd.detect(frames[0])
-    for i in range(1, len(frames)):
-        try:
-            cd.track_court(frames[i])
-        except Exception:
-            cd.court_warp_matrix.append(cd.court_warp_matrix[-1])
-            cd.game_warp_matrix.append(cd.game_warp_matrix[-1])
-        if i % 100 == 0:
-            print(f'  Court tracking: {i}/{len(frames)}')
     os.chdir(ORIG_DIR)
-    print(f'  Court tracked, {len(cd.game_warp_matrix)} matrices')
+    cwm = cd.court_warp_matrix[0]  # fixed camera — single warp matrix
+    print('  Court detected (fixed camera — using frame 0 homography)')
 
     # Init pose detector and tracker
     print('Detecting players...')
@@ -67,57 +124,78 @@ def main():
 
     # Init schematic renderer with video-derived court geometry
     renderer = SchematicRenderer()
-    renderer.precompute_camera_court_geometry(cd.court_warp_matrix[0])
+    renderer.precompute_camera_court_geometry(cwm)
 
-    # Output video
+    # =========================================================================
+    # Pass 1: Detect all players, collect camera-space data
+    # =========================================================================
+    print('Pass 1: Collecting detections...')
+    far_data = [None] * n_frames   # {kps, foot_cam} per frame
+    near_data = [None] * n_frames
+
+    for i in range(n_frames):
+        players = tracker.update(frames[i], conf=0.1)
+
+        for role, storage in [('far', far_data), ('near', near_data)]:
+            det_data = players.get(role)
+            if det_data is not None:
+                kps, foot_cam = prepare_keypoints(det_data, role)
+                storage[i] = {'kps': kps, 'foot_cam': foot_cam}
+
+        if i % 50 == 0:
+            f = 'Y' if far_data[i] else 'N'
+            n = 'Y' if near_data[i] else 'N'
+            print(f'  Frame {i}/{n_frames}: far={f} near={n}')
+
+    # =========================================================================
+    # Pass 2: Smooth foot positions, project, render
+    # =========================================================================
+    print('Pass 2: Smoothing and rendering...')
+
+    # Smooth camera-space foot positions
+    far_feet = [d['foot_cam'].tolist() if d else None for d in far_data]
+    near_feet = [d['foot_cam'].tolist() if d else None for d in near_data]
+    far_feet_smooth = smooth_positions(far_feet)
+    near_feet_smooth = smooth_positions(near_feet)
+
+    # Write smoothed feet back
+    for i in range(n_frames):
+        if far_data[i] is not None and far_feet_smooth[i] is not None:
+            far_data[i]['foot_cam'] = np.array(far_feet_smooth[i])
+        if near_data[i] is not None and near_feet_smooth[i] is not None:
+            near_data[i]['foot_cam'] = np.array(near_feet_smooth[i])
+
+    # Project to schematic and smooth schematic positions too
+    far_schem = [None] * n_frames
+    near_schem = [None] * n_frames
+    for i in range(n_frames):
+        if far_data[i] is not None:
+            far_schem[i] = renderer.transform_foot_to_schematic(far_data[i]['foot_cam'], cwm)
+        if near_data[i] is not None:
+            near_schem[i] = renderer.transform_foot_to_schematic(near_data[i]['foot_cam'], cwm)
+
+    far_schem = smooth_positions(far_schem)
+    near_schem = smooth_positions(near_schem)
+
+    # Render
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter('_temp_schematic.mp4', fourcc, fps, (1280, 720))
 
-    for i in range(len(frames)):
-        frame = frames[i]
-        cwm = cd.court_warp_matrix[i] if i < len(cd.court_warp_matrix) else cd.court_warp_matrix[-1]
-
-        # Detect players
-        players = tracker.update(frame, conf=0.1)
-
-        # Build player data for renderer
+    for i in range(n_frames):
         player_list = []
-        for role, color, pid in [('far', FAR_COLOR, 1), ('near', NEAR_COLOR, 2)]:
-            det_data = players.get(role)
-            if det_data is None:
+
+        for role, data, schem, color, pid in [
+            ('far', far_data, far_schem, FAR_COLOR, 1),
+            ('near', near_data, near_schem, NEAR_COLOR, 2),
+        ]:
+            if data[i] is None or schem[i] is None:
                 continue
 
-            kps = det_data['keypoints'].copy()
-            bbox = det_data['bbox']
+            foot_schem = schem[i]
+            foot_cam_y = data[i]['foot_cam'][1]
+            kps = data[i]['kps']
 
-            # Always use bbox bottom-center as foot anchor (matches pose video)
-            foot_cam = np.array([(bbox[0] + bbox[2]) / 2, bbox[3]])
-
-            # For far player, lower-body keypoints often have low confidence.
-            # Synthesize missing hips/knees/ankles from bbox so the skeleton
-            # extends to the foot anchor instead of being cropped at the waist.
-            if role == 'far':
-                bbox_cx = (bbox[0] + bbox[2]) / 2
-                bbox_bottom = bbox[3]
-                bbox_h = bbox[3] - bbox[1]
-                # Approximate lower-body positions from bbox geometry
-                synth = {
-                    11: (bbox_cx - bbox_h * 0.06, bbox[1] + bbox_h * 0.55),  # left_hip
-                    12: (bbox_cx + bbox_h * 0.06, bbox[1] + bbox_h * 0.55),  # right_hip
-                    13: (bbox_cx - bbox_h * 0.05, bbox[1] + bbox_h * 0.75),  # left_knee
-                    14: (bbox_cx + bbox_h * 0.05, bbox[1] + bbox_h * 0.75),  # right_knee
-                    15: (bbox_cx - bbox_h * 0.05, bbox_bottom),              # left_ankle
-                    16: (bbox_cx + bbox_h * 0.05, bbox_bottom),              # right_ankle
-                }
-                for idx, (sx, sy) in synth.items():
-                    if kps[idx, 2] < 0.3:
-                        kps[idx] = [sx, sy, 0.35]
-
-            # Project foot to schematic via homography
-            foot_schem = renderer.transform_foot_to_schematic(foot_cam, cwm)
-
-            # Compute upright skeleton in schematic space
-            kps_schematic = renderer.compute_upright_skeleton(kps, foot_schem, foot_cam[1])
+            kps_schematic = renderer.compute_upright_skeleton(kps, foot_schem, foot_cam_y)
 
             player_list.append({
                 'keypoints_schematic': kps_schematic,
@@ -127,16 +205,11 @@ def main():
                 'foot_pos': foot_schem,
             })
 
-        # Render schematic frame
-        canvas = renderer.render_frame(
-            frame_num=i,
-            players=player_list,
-        )
-
+        canvas = renderer.render_frame(frame_num=i, players=player_list)
         writer.write(canvas)
+
         if i % 50 == 0:
-            n_on = sum(1 for p in player_list if True)
-            print(f'  Frame {i}/{len(frames)}: {n_on} players on schematic')
+            print(f'  Rendering frame {i}/{n_frames}: {len(player_list)} players')
 
     writer.release()
     print(f'\nRe-encoding to H.264...')
