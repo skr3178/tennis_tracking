@@ -1,5 +1,5 @@
 """
-Generate pose estimation video from Original_HL_clip.mp4.
+Generate pose estimation video from Original_HL_clip_cropped.mp4.
 Uses dual-pass detection + court-area filtering for clean 2-player tracking.
 """
 import sys
@@ -12,7 +12,7 @@ ORIG_DIR = os.getcwd()
 
 from pose_detector import PoseDetector, PlayerTracker, SKELETON_CONNECTIONS
 
-VIDEO = 'Original_HL_clip.mp4'
+VIDEO = 'S_Original_HL_clip_cropped.mp4'
 OUTPUT = 'pose_estimation_output.mp4'
 
 # Colors (BGR)
@@ -42,6 +42,10 @@ def draw_player(frame, det, color, label):
         if kps[j, 2] > 0.3:
             cv2.circle(frame, (int(kps[j, 0]), int(kps[j, 1])), 3,
                        (255, 255, 255), -1, cv2.LINE_AA)
+
+    # Foot anchor dot — bottom center of bounding box
+    foot = ((bbox[0] + bbox[2]) // 2, bbox[3])
+    cv2.circle(frame, foot, 5, color, -1, cv2.LINE_AA)
 
 
 def main():

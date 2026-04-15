@@ -70,9 +70,9 @@ SKELETON_CONNECTIONS = [
     (12, 14), (14, 16),
 ]
 
-# Net height in pixels at the near and far ends of the court
-NET_HEIGHT_NEAR = 45
-NET_HEIGHT_FAR = 25
+# Net height in reference court units (same coordinate system as REF_CORNERS)
+NET_HEIGHT_REF = 107
+REF_COURT_WIDTH = 1379 - 286  # = 1093 reference units
 
 
 class SchematicRenderer:
@@ -109,10 +109,26 @@ class SchematicRenderer:
         self.net_left = self._transform_point((186, 1748))
         self.net_right = self._transform_point((1479, 1748))
 
-        # Perspective scale range: y position on schematic → scale factor
-        # Far baseline y ~ 210, near baseline y ~ 590
-        self.y_far = 210.0
-        self.y_near = 590.0
+        # Pre-compute schematic sideline polylines for court width lookup
+        n_samples = 200
+        ref_ys = np.linspace(561, 2935, n_samples)
+        left_pts = np.array([[[286, y]] for y in ref_ys], dtype=np.float32)
+        right_pts = np.array([[[1379, y]] for y in ref_ys], dtype=np.float32)
+        left_schem = cv2.perspectiveTransform(left_pts, self.H_ref_to_schematic).reshape(-1, 2)
+        right_schem = cv2.perspectiveTransform(right_pts, self.H_ref_to_schematic).reshape(-1, 2)
+        # Sort by schematic y for interpolation
+        left_order = np.argsort(left_schem[:, 1])
+        right_order = np.argsort(right_schem[:, 1])
+        self._schem_left_y = left_schem[left_order, 1]
+        self._schem_left_x = left_schem[left_order, 0]
+        self._schem_right_y = right_schem[right_order, 1]
+        self._schem_right_x = right_schem[right_order, 0]
+
+        # Camera court geometry (set when precompute_camera_court_geometry is called)
+        self._cam_left_y = None
+        self._cam_left_x = None
+        self._cam_right_y = None
+        self._cam_right_x = None
 
     def _transform_point(self, pt):
         """Transform a single point from ref coords to schematic coords."""
@@ -132,42 +148,64 @@ class SchematicRenderer:
         tp = cv2.perspectiveTransform(p, self.H_ref_to_schematic)
         return tp.reshape(-1, 2).astype(np.int32)
 
-    def _get_perspective_scale(self, y_schematic):
+    def precompute_camera_court_geometry(self, court_warp_matrix):
         """
-        Get a scale factor based on vertical position on the schematic.
-        Objects at the far baseline are smaller, at the near baseline are larger.
-        Returns a value between ~0.35 (far) and ~1.0 (near).
+        Project left and right sidelines into camera space from frame 0.
+        Call once — camera is fixed so this remains valid for all frames.
         """
-        t = (y_schematic - self.y_far) / (self.y_near - self.y_far)
-        t = np.clip(t, 0, 1)
-        return 0.35 + 0.65 * t
+        n_samples = 200
+        ref_ys = np.linspace(561, 2935, n_samples)
+        left_pts = np.array([[[286, y]] for y in ref_ys], dtype=np.float32)
+        right_pts = np.array([[[1379, y]] for y in ref_ys], dtype=np.float32)
+        left_cam = cv2.perspectiveTransform(left_pts, court_warp_matrix).reshape(-1, 2)
+        right_cam = cv2.perspectiveTransform(right_pts, court_warp_matrix).reshape(-1, 2)
+        # Sort by camera y for interpolation
+        left_order = np.argsort(left_cam[:, 1])
+        right_order = np.argsort(right_cam[:, 1])
+        self._cam_left_y = left_cam[left_order, 1]
+        self._cam_left_x = left_cam[left_order, 0]
+        self._cam_right_y = right_cam[right_order, 1]
+        self._cam_right_x = right_cam[right_order, 0]
 
-    def transform_foot_to_schematic(self, foot_camera, game_warp_matrix):
+    def get_camera_court_width(self, cam_y):
+        """Return court width in camera pixels at the given camera y-coordinate."""
+        left_x = np.interp(cam_y, self._cam_left_y, self._cam_left_x)
+        right_x = np.interp(cam_y, self._cam_right_y, self._cam_right_x)
+        return max(right_x - left_x, 10.0)
+
+    def get_schematic_court_width(self, schem_y):
+        """Return court width in schematic pixels at the given schematic y-coordinate."""
+        left_x = np.interp(schem_y, self._schem_left_y, self._schem_left_x)
+        right_x = np.interp(schem_y, self._schem_right_y, self._schem_right_x)
+        return max(right_x - left_x, 10.0)
+
+    def transform_foot_to_schematic(self, foot_camera, court_warp_matrix):
         """
         Transform a foot position from camera coords to schematic coords.
         Only the foot touches the ground plane, so only the foot goes through
         the homography.
+
+        court_warp_matrix maps ref→camera, so we invert it to get camera→ref,
+        then chain with H_ref_to_schematic.
         """
-        H_combined = self.H_ref_to_schematic @ game_warp_matrix
+        cam_to_ref = cv2.invert(court_warp_matrix)[1]
+        H_combined = self.H_ref_to_schematic @ cam_to_ref
         p = np.array([[[foot_camera[0], foot_camera[1]]]], dtype=np.float32)
         tp = cv2.perspectiveTransform(p, H_combined)
         return (float(tp[0, 0, 0]), float(tp[0, 0, 1]))
 
-    def compute_upright_skeleton(self, keypoints_camera, foot_schematic):
+    def compute_upright_skeleton(self, keypoints_camera, foot_schematic, foot_cam_y=None):
         """
         Compute upright skeleton positions in schematic space.
 
-        Instead of projecting all keypoints through the ground-plane homography
-        (which lays them flat), we:
-        1. Take the foot anchor in schematic space
-        2. Compute relative offsets of each keypoint from the feet in camera space
-        3. Scale by perspective depth
-        4. Place the skeleton upright: x-offsets map to schematic x,
-           y-offsets (height above ground) map to schematic y going UPWARD
+        Scaling is derived from the court geometry visible in the video:
+        pixel_scale = schematic_court_width / camera_court_width at the
+        player's depth. This naturally handles perspective.
 
         Args:
             keypoints_camera: (17, 3) — x, y, conf in camera pixel coords
             foot_schematic: (x, y) — foot anchor in schematic coords
+            foot_cam_y: float — camera y-coordinate of foot (for court width lookup)
 
         Returns:
             (17, 2) — keypoint positions in schematic coords
@@ -181,19 +219,23 @@ class SchematicRenderer:
         if len(visible_ankles) > 0:
             foot_cam = np.mean([a[:2] for a in visible_ankles], axis=0)
         else:
-            # Fallback: use bottom of bbox (max y among visible keypoints)
             visible = kps[kps[:, 2] > 0.3]
             if len(visible) > 0:
                 foot_cam = np.array([np.mean(visible[:, 0]), np.max(visible[:, 1])])
             else:
                 return np.full((17, 2), -1)
 
-        # Compute perspective scale based on foot y position
-        scale = self._get_perspective_scale(fy)
+        # Use camera y for court width lookup (prefer explicit, fallback to foot_cam)
+        cam_y = foot_cam_y if foot_cam_y is not None else foot_cam[1]
 
-        # Base pixel scale: how many schematic pixels per camera pixel
-        # Tuned so a player ~140px tall in camera becomes a reasonable skeleton
-        pixel_scale = scale * 0.8
+        # Video-derived scaling: ratio of schematic to camera court width
+        if self._cam_left_y is not None:
+            W_cam = self.get_camera_court_width(cam_y)
+            W_schem = self.get_schematic_court_width(fy)
+            pixel_scale = W_schem / W_cam
+        else:
+            # Fallback if camera geometry not precomputed (e.g. standalone tests)
+            pixel_scale = 0.5
 
         # Compute schematic positions for each keypoint
         result = np.zeros((17, 2))
@@ -215,24 +257,21 @@ class SchematicRenderer:
                 continue
             cv2.line(canvas, p1, p2, LINE_COLOR, 2, cv2.LINE_AA)
 
-        # Upright net band — a vertical trapezoid rising above the net line
+        # Upright net band — height derived from court proportions
         nl = self.net_left
         nr = self.net_right
+        net_height_ratio = NET_HEIGHT_REF / REF_COURT_WIDTH
+        net_h_left = int(net_height_ratio * self.get_schematic_court_width(nl[1]))
+        net_h_right = int(net_height_ratio * self.get_schematic_court_width(nr[1]))
         net_poly = np.array([
             [nl[0], nl[1]],                          # bottom-left (on court)
             [nr[0], nr[1]],                          # bottom-right (on court)
-            [nr[0], nr[1] - NET_HEIGHT_FAR],         # top-right (shorter, far perspective)
-            [nl[0], nl[1] - NET_HEIGHT_FAR],         # top-left
+            [nr[0], nr[1] - net_h_right],            # top-right
+            [nl[0], nl[1] - net_h_left],             # top-left
         ], dtype=np.int32)
-        # The net center is higher than the edges
-        # Interpolate heights: edges = FAR height, center = midpoint of FAR/NEAR
-        mid_x = (nl[0] + nr[0]) // 2
-        mid_y = (nl[1] + nr[1]) // 2
-        net_center_height = (NET_HEIGHT_FAR + NET_HEIGHT_NEAR) // 2
 
         # Draw as semi-transparent filled polygon
         overlay = canvas.copy()
-        # Simple trapezoid for now
         cv2.fillPoly(overlay, [net_poly], NET_COLOR)
         cv2.addWeighted(overlay, 0.6, canvas, 0.4, 0, canvas)
 
@@ -240,8 +279,8 @@ class SchematicRenderer:
         net_p1, net_p2 = self.schematic_lines['net']
         cv2.line(canvas, net_p1, net_p2, LINE_COLOR, 2, cv2.LINE_AA)
         # Net top line
-        cv2.line(canvas, (nl[0], nl[1] - NET_HEIGHT_FAR),
-                 (nr[0], nr[1] - NET_HEIGHT_FAR), LINE_COLOR, 1, cv2.LINE_AA)
+        cv2.line(canvas, (nl[0], nl[1] - net_h_left),
+                 (nr[0], nr[1] - net_h_right), LINE_COLOR, 1, cv2.LINE_AA)
 
         # Intersection dots
         for dot in self.intersection_dots:
@@ -265,13 +304,9 @@ class SchematicRenderer:
                 cv2.circle(canvas, pt, 3, (255, 255, 255), -1, cv2.LINE_AA)
 
     def draw_player_marker(self, canvas, position, player_id, color, radius=12):
-        """Draw a filled circle with player ID label at foot position."""
+        """Draw a filled circle at foot position."""
         x, y = int(position[0]), int(position[1])
         cv2.circle(canvas, (x, y), radius, color, -1, cv2.LINE_AA)
-        label = f'#{player_id}'
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-        cv2.putText(canvas, label, (x - tw // 2, y + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
 
     def draw_player_bbox(self, canvas, keypoints_schematic, color, original_kps=None,
                          conf_threshold=0.3):
