@@ -26,6 +26,9 @@ export_*.png
 
 # OpenCV / video outputs
 *.mp4
+# Exceptions: input video and key outputs
+!S_Original_HL_clip_cropped.mp4
+!schematic_output.mp4
 
 # Claude Code
 .claude/
@@ -42,6 +45,8 @@ Thumbs.db
 *.csv
 *.gif
 *.tflite
+# Exceptions: README assets
+!side_by_side_comparison.gif
 
 # Nested git repos
 TrackNet/.git/
