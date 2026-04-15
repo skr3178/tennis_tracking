@@ -35,11 +35,7 @@ Download these checkpoints and place them in the project root:
 |-------|------|------|----------|---------|
 | YOLO26x-Pose | `yolo26x-pose.pt` | 121MB | Auto-downloaded by `ultralytics` on first run, or from [Ultralytics Assets](https://github.com/ultralytics/assets/releases) | Full-frame near player pose detection |
 | YOLO11n-Pose | `yolo11n-pose.pt` | 6MB | Auto-downloaded by `ultralytics` on first run, or from [Ultralytics Assets](https://github.com/ultralytics/assets/releases) | Crop-based far player detection |
-| YOLO11n-Seg | `yolo11n-seg.pt` | 6MB | Auto-downloaded by `ultralytics` on first run | Racket segmentation |
 | WASB HRNet | `wasb_tennis_best.pth.tar` | 6MB | [WASB-SBDT Model Zoo](https://drive.google.com/file/d/14AeyIOCQ2UaQmbZLNQJa1H_eSwxUXk7z/view) (Tennis column) | Ball detection (F1=81.3) |
-| TrackNetV2 | `TrackNetV4/best_model_V2_NF_RIO_1m_e8.keras` | 131MB | [Google Drive](https://drive.google.com/drive/folders/1x2wl7V69dJy8LJvx8WAXURCz7pK46rGW?usp=sharing) | TrackNet ball detection |
-| TrackNetV4 TypeA | `TrackNetV4/best_model_V1_NF_RIO_10u_e17.keras` | 131MB | [Google Drive](https://drive.google.com/drive/folders/1x2wl7V69dJy8LJvx8WAXURCz7pK46rGW?usp=sharing) | TrackNetV4 (incompatible - see [known issues](#known-issues)) |
-| TrackNetV4 Base | `TrackNetV4/best_model_base_new_data_e28.keras` | 131MB | [Google Drive](https://drive.google.com/drive/folders/1x2wl7V69dJy8LJvx8WAXURCz7pK46rGW?usp=sharing) | TrackNetV4 base (incompatible - see [known issues](#known-issues)) |
 
 ### 4. Input video
 
