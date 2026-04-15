@@ -1,0 +1,6 @@
+[submodule "WASB-SBDT"]
+	path = WASB-SBDT
+	url = https://github.com/nttcom/WASB-SBDT.git
+[submodule "TrackNetV4"]
+	path = TrackNetV4
+	url = https://github.com/TrackNetV4/TrackNetV4

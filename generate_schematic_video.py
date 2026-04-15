@@ -19,9 +19,11 @@ from schematic_renderer import (SchematicRenderer, NEAR_COLOR, FAR_COLOR,
 
 VIDEO = 'S_Original_HL_clip_cropped.mp4'
 OUTPUT = 'schematic_output.mp4'
+BALL_CSV = 'wasb_ball_positions.csv'
 
 SMOOTH_WINDOW = 7
 SMOOTH_POLY = 2
+BALL_TRAIL_LEN = 15
 
 
 def smooth_positions(positions, window=SMOOTH_WINDOW, poly=SMOOTH_POLY):
@@ -177,6 +179,29 @@ def main():
     far_schem = smooth_positions(far_schem)
     near_schem = smooth_positions(near_schem)
 
+    # Load ball positions from CSV and project to schematic
+    print('  Loading ball positions...')
+    import csv
+    ball_cam = [None] * n_frames
+    with open(BALL_CSV, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            fi = int(row['frame'])
+            if fi < n_frames and int(row['visible']):
+                ball_cam[fi] = (float(row['x']), float(row['y']))
+
+    # Project ball to schematic (ball is on/near ground plane)
+    ball_schem = [None] * n_frames
+    for i in range(n_frames):
+        if ball_cam[i] is not None:
+            ball_schem[i] = renderer.transform_foot_to_schematic(
+                np.array(ball_cam[i]), cwm)
+
+    ball_schem = smooth_positions(ball_schem, window=5, poly=2)
+
+    n_ball = sum(1 for b in ball_schem if b is not None)
+    print(f'  Ball positions: {n_ball}/{n_frames} frames')
+
     # Render
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter('_temp_schematic.mp4', fourcc, fps, (1280, 720))
@@ -205,11 +230,18 @@ def main():
                 'foot_pos': foot_schem,
             })
 
-        canvas = renderer.render_frame(frame_num=i, players=player_list)
+        # Ball position and trail for this frame
+        bp = ball_schem[i] if ball_schem[i] is not None else None
+        bt = [b for b in ball_schem[max(0, i - BALL_TRAIL_LEN):i + 1] if b is not None]
+
+        canvas = renderer.render_frame(
+            frame_num=i, players=player_list,
+            ball_pos=bp, ball_trail=bt if len(bt) >= 2 else None)
         writer.write(canvas)
 
         if i % 50 == 0:
-            print(f'  Rendering frame {i}/{n_frames}: {len(player_list)} players')
+            b = 'Y' if bp else 'N'
+            print(f'  Rendering frame {i}/{n_frames}: {len(player_list)} players, ball={b}')
 
     writer.release()
     print(f'\nRe-encoding to H.264...')

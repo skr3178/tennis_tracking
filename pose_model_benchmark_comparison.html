@@ -1,0 +1,198 @@
+
+<style>
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+.tab-btn{background:none;border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:6px 14px;font-size:13px;cursor:pointer;color:var(--color-text-secondary)}
+.tab-btn.active{background:var(--color-background-secondary);color:var(--color-text-primary);border-color:var(--color-border-secondary)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px 10px;font-weight:500;color:var(--color-text-secondary);border-bottom:0.5px solid var(--color-border-tertiary);font-size:12px}
+td{padding:8px 10px;border-bottom:0.5px solid var(--color-border-tertiary);color:var(--color-text-primary)}
+tr:last-child td{border-bottom:none}
+.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:var(--border-radius-md)}
+.badge-green{background:var(--color-background-success);color:var(--color-text-success)}
+.badge-blue{background:var(--color-background-info);color:var(--color-text-info)}
+.badge-warn{background:var(--color-background-warning);color:var(--color-text-warning)}
+.bar-wrap{background:var(--color-background-tertiary);border-radius:2px;height:8px;width:120px;display:inline-block;vertical-align:middle}
+.bar{height:8px;border-radius:2px;display:inline-block}
+.note{font-size:12px;color:var(--color-text-secondary);margin-top:12px;line-height:1.6}
+</style>
+
+<h2 class="sr-only">Pose estimation model benchmark comparison across accuracy, speed, and suitability for tennis video analysis</h2>
+
+<div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap">
+  <button class="tab-btn active" onclick="show('acc')">Accuracy (AP)</button>
+  <button class="tab-btn" onclick="show('speed')">Speed (FPS)</button>
+  <button class="tab-btn" onclick="show('tennis')">Tennis suitability</button>
+</div>
+
+<div id="acc">
+  <div style="position:relative;width:100%;height:300px;margin-bottom:8px">
+    <canvas id="accChart" role="img" aria-label="Bar chart of COCO keypoint AP scores across pose estimation models">COCO AP scores: ViTPose-G 81.1, ViTPose-H 79.1, RTMPose-x 77.8, AlphaPose 71.2, HRNet-W48 75.1, YOLO26x-pose 71.6, YOLO11x-pose 69.7, YOLO26m-pose 68.8.</canvas>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--color-text-secondary);margin-bottom:12px">
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#534AB7"></span>Transformer-based</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#1D9E75"></span>CNN top-down</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#D85A30"></span>YOLO single-stage</span>
+  </div>
+  <p class="note">Metric: COCO Keypoints val2017 AP (mAP50-95). YOLO26/YOLO11 use the e2e (end-to-end) score from official Ultralytics docs. ViTPose uses top-down with detection. RTMPose uses AIC+COCO training data.</p>
+</div>
+
+<div id="speed" style="display:none">
+  <div style="position:relative;width:100%;height:300px;margin-bottom:8px">
+    <canvas id="speedChart" role="img" aria-label="Bar chart of inference speed in FPS for pose estimation models on GPU">GPU FPS: RTMPose-m 430, RTMPose-s 280, YOLO26n-pose 550, YOLO26x-pose 82, YOLO11x-pose 88, AlphaPose 20, HRNet-W48 15, ViTPose-H 8.</canvas>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--color-text-secondary);margin-bottom:12px">
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#534AB7"></span>Transformer-based</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#1D9E75"></span>CNN top-down</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#D85A30"></span>YOLO single-stage</span>
+  </div>
+  <p class="note">GPU FPS on NVIDIA GTX 1660 Ti / T4 using TensorRT where available. YOLO26n-pose and RTMPose-m are the clear winners for real-time use. ViTPose-H is research-grade, not suitable for video.</p>
+</div>
+
+<div id="tennis" style="display:none">
+  <table>
+    <thead>
+      <tr>
+        <th>Model</th>
+        <th>COCO AP</th>
+        <th>Real-time GPU</th>
+        <th>Distant players</th>
+        <th>Occlusion</th>
+        <th>Temporal</th>
+        <th>Best for</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="background:var(--color-background-info)">
+        <td style="font-weight:500">RTMPose-m</td>
+        <td>75.8</td>
+        <td><span class="badge badge-green">430 FPS</span></td>
+        <td><span class="badge badge-green">Strong</span></td>
+        <td><span class="badge badge-green">Strong</span></td>
+        <td><span class="badge badge-warn">None</span></td>
+        <td>Live tennis video</td>
+      </tr>
+      <tr>
+        <td style="font-weight:500">RTMPose-x</td>
+        <td>77.8</td>
+        <td><span class="badge badge-green">130 FPS</span></td>
+        <td><span class="badge badge-green">Strong</span></td>
+        <td><span class="badge badge-green">Strong</span></td>
+        <td><span class="badge badge-warn">None</span></td>
+        <td>Accuracy-priority video</td>
+      </tr>
+      <tr>
+        <td style="font-weight:500">AlphaPose</td>
+        <td>71.2</td>
+        <td><span class="badge badge-blue">20 FPS</span></td>
+        <td><span class="badge badge-blue">Good</span></td>
+        <td><span class="badge badge-green">Strong</span></td>
+        <td><span class="badge badge-green">Built-in</span></td>
+        <td>Player identity tracking</td>
+      </tr>
+      <tr>
+        <td style="font-weight:500">ViTPose-H</td>
+        <td>79.1</td>
+        <td><span class="badge badge-warn">8 FPS</span></td>
+        <td><span class="badge badge-green">Best</span></td>
+        <td><span class="badge badge-green">Strong</span></td>
+        <td><span class="badge badge-warn">None</span></td>
+        <td>Offline stroke analysis</td>
+      </tr>
+      <tr>
+        <td style="font-weight:500">HRNet-W48</td>
+        <td>75.1</td>
+        <td><span class="badge badge-warn">15 FPS</span></td>
+        <td><span class="badge badge-green">Strong</span></td>
+        <td><span class="badge badge-green">Strong</span></td>
+        <td><span class="badge badge-warn">None</span></td>
+        <td>3D lifting input</td>
+      </tr>
+      <tr>
+        <td style="font-weight:500">YOLO26x-pose</td>
+        <td>71.6</td>
+        <td><span class="badge badge-blue">82 FPS</span></td>
+        <td><span class="badge badge-blue">Moderate</span></td>
+        <td><span class="badge badge-warn">Weak</span></td>
+        <td><span class="badge badge-warn">None</span></td>
+        <td>Unified detect+pose</td>
+      </tr>
+      <tr>
+        <td style="font-weight:500">YOLO11x-pose</td>
+        <td>69.7</td>
+        <td><span class="badge badge-blue">88 FPS</span></td>
+        <td><span class="badge badge-warn">Weak</span></td>
+        <td><span class="badge badge-warn">Weak</span></td>
+        <td><span class="badge badge-warn">None</span></td>
+        <td>Quick prototyping</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note">RTMPose-m (highlighted) is the recommended choice for live tennis video. ViTPose-H is best for post-match biomechanical analysis where speed is not needed. "Temporal" = built-in tracking/smoothing across frames.</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+function show(tab) {
+  ['acc','speed','tennis'].forEach(t => {
+    document.getElementById(t).style.display = t === tab ? '' : 'none';
+  });
+  document.querySelectorAll('.tab-btn').forEach((b,i) => {
+    b.classList.toggle('active', ['acc','speed','tennis'][i] === tab);
+  });
+}
+
+const labels = ['ViTPose-G','ViTPose-H','RTMPose-x','HRNet-W48','RTMPose-m','AlphaPose','YOLO26x','YOLO11x','YOLO26m','YOLO11m'];
+const colors = ['#534AB7','#534AB7','#1D9E75','#1D9E75','#1D9E75','#1D9E75','#D85A30','#D85A30','#D85A30','#D85A30'];
+const apData = [81.1, 79.1, 77.8, 75.1, 75.8, 71.2, 71.6, 69.7, 68.8, 65.9];
+
+new Chart(document.getElementById('accChart'), {
+  type: 'bar',
+  data: {
+    labels,
+    datasets: [{
+      label: 'COCO AP',
+      data: apData,
+      backgroundColor: colors,
+      borderColor: colors,
+      borderWidth: 0,
+      borderRadius: 3
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ' AP: ' + ctx.parsed.y } } },
+    scales: {
+      y: { min: 60, max: 84, ticks: { font: { size: 11 }, color: '#888780' }, grid: { color: 'rgba(136,135,128,0.15)' } },
+      x: { ticks: { font: { size: 11 }, color: '#888780', maxRotation: 30 }, grid: { display: false } }
+    }
+  }
+});
+
+const speedLabels = ['YOLO26n','RTMPose-m','RTMPose-s','YOLO26x','YOLO11x','RTMPose-x','AlphaPose','HRNet-W48','ViTPose-H'];
+const speedColors = ['#D85A30','#1D9E75','#1D9E75','#D85A30','#D85A30','#1D9E75','#1D9E75','#1D9E75','#534AB7'];
+const speedData = [550, 430, 280, 82, 88, 130, 20, 15, 8];
+
+new Chart(document.getElementById('speedChart'), {
+  type: 'bar',
+  data: {
+    labels: speedLabels,
+    datasets: [{
+      label: 'GPU FPS',
+      data: speedData,
+      backgroundColor: speedColors,
+      borderWidth: 0,
+      borderRadius: 3
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ' ' + ctx.parsed.y + ' FPS' } } },
+    scales: {
+      y: { ticks: { font: { size: 11 }, color: '#888780' }, grid: { color: 'rgba(136,135,128,0.15)' } },
+      x: { ticks: { font: { size: 11 }, color: '#888780', maxRotation: 30 }, grid: { display: false } }
+    }
+  }
+});
+</script>

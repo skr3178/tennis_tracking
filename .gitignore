@@ -7,15 +7,22 @@ __pycache__/
 # Model weights & checkpoints
 *.pt
 *.pth
+*.pth.tar
 *.ckpt
 *.pkl
 *.onnx
+*.tar
+tracknetv2_tennis_best/
 
 # Large downloaded repos
 GEM-X/
 
-# Test outputs
+# Test/debug outputs
 test_*.png
+_debug_*.png
+_check_*.png
+_ref_*.png
+export_*.png
 
 # OpenCV / video outputs
 *.mp4
