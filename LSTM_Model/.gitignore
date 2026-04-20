@@ -1,0 +1,29 @@
+# Model weights / checkpoints
+checkpoints/
+checkpoints_*/
+*.pt
+*.pth
+*.ckpt
+*.tar
+*.pkl
+
+# Videos
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Large training logs
+training*.log
+train_stdout.log
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor/OS junk
+.DS_Store
+*.swp
+.idea/
+.vscode/

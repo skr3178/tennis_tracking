@@ -1,66 +1,72 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-.venv/
+# ============================================================
+# Only track scripts/code for the 3D ball tracking pipeline.
+# Ignore everything by default, then whitelist what matters.
+# ============================================================
 
-# Model weights & checkpoints
-*.pt
-*.pth
-*.pth.tar
-*.ckpt
-*.pkl
-*.onnx
-*.tar
-tracknetv2_tennis_best/
+# Ignore everything
+*
 
-# Large downloaded repos
-GEM-X/
+# --- Git / repo ---
+!.gitignore
+!README.md
+!Readme_3D.md
+!requirements.txt
 
-# Test/debug outputs
-test_*.png
-_debug_*.png
-_check_*.png
-_ref_*.png
-export_*.png
+# --- Root-level scripts ---
+!ball_tracker.py
+!wasb_ball_detect.py
+!parallel_collect.sh
+!ours_to_npz.py
+!paper_to_npz.py
 
-# OpenCV / video outputs
-*.mp4
-# Exceptions: input video and key outputs
+# --- Input data for real video inference ---
 !S_Original_HL_clip_cropped.mp4
-!schematic_output.mp4
+!wasb_ball_positions.csv
 
-# Claude Code
-.claude/
+# --- Core LSTM pipeline ---
+!LSTM_Model/
+!LSTM_Model/**
+LSTM_Model/checkpoints*/
+LSTM_Model/inference_output/
+LSTM_Model/outputs/
+LSTM_Model/paper/
+LSTM_Model/__pycache__/
+LSTM_Model/**/__pycache__/
+LSTM_Model/*.log
+LSTM_Model/*.png
+LSTM_Model/utils/
 
-# IDE
-.vscode/
-.idea/
+# --- TrackNet (2D ball detection) ---
+!TrackNet/
+!TrackNet/**
+TrackNet/__pycache__/
+TrackNet/checkpoint/
+TrackNet/datasets/
+TrackNet/pics/
 
-# OS
-.DS_Store
-Thumbs.db
+# --- Court detection ---
+!TennisCourtDetector/
+!TennisCourtDetector/**
+TennisCourtDetector/__pycache__/
+TennisCourtDetector/*.pt
+TennisCourtDetector/*.png
+TennisCourtDetector/imgs/
 
-# Misc
-*.csv
-*.gif
-*.tflite
-# Exceptions: README assets
-!side_by_side_comparison.gif
+# --- 3D viewer ---
+!viewer_3d/
+!viewer_3d/**
 
-# Nested git repos
-TrackNet/.git/
-tennis-tracking/.git/
-tennis-tracking/.github/
+# --- Tennis analysis (court + tracking) ---
+!tennis_analysis/
+!tennis_analysis/**
+tennis_analysis/__pycache__/
+tennis_analysis/**/__pycache__/
+tennis_analysis/input_videos/
+tennis_analysis/output_videos/
+tennis_analysis/inference_output/
+tennis_analysis/runs/
+tennis_analysis/models/
+tennis_analysis/training/
 
-# Large dirs in subprojects
-tennis-tracking/VideoInput/
-tennis-tracking/VideoOutput/
-tennis-tracking/WeightsTracknet/
-tennis-tracking/Models/
-tennis-tracking/Bounces/
-tennis-tracking/TrackPlayers/
-tennis-tracking/convert/
-
-# Badminton (separate project)
-badminton/
+# --- Deactivated nested git repos ---
+.git_bak/

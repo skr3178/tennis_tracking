@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D Tennis Pose Viewer</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; overflow: hidden; font-family: 'Segoe UI', system-ui, sans-serif; color: #e0e0e0; }
+#canvas-container { width: 100vw; height: 100vh; }
+canvas { display: block; }
+
+/* Controls overlay */
+#controls {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: rgba(10, 10, 30, 0.85);
+  backdrop-filter: blur(10px);
+  padding: 12px 20px;
+  display: flex; align-items: center; gap: 12px;
+  z-index: 10;
+}
+#controls button {
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+  color: #fff; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+  font-size: 14px; transition: background 0.2s;
+}
+#controls button:hover { background: rgba(255,255,255,0.2); }
+#controls button.active { background: rgba(80,180,255,0.3); border-color: rgba(80,180,255,0.6); }
+#timeline {
+  flex: 1; height: 6px; -webkit-appearance: none; appearance: none;
+  background: rgba(255,255,255,0.15); border-radius: 3px; cursor: pointer;
+  outline: none;
+}
+#timeline::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px;
+  background: #50b4ff; border-radius: 50%; cursor: pointer;
+}
+#timeline::-moz-range-thumb {
+  width: 14px; height: 14px;
+  background: #50b4ff; border-radius: 50%; cursor: pointer; border: none;
+}
+#frame-info { font-size: 13px; min-width: 110px; text-align: right; font-variant-numeric: tabular-nums; }
+#speed-control { font-size: 13px; display: flex; align-items: center; gap: 4px; }
+#speed-control select {
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+  color: #fff; padding: 3px 6px; border-radius: 4px; font-size: 13px;
+}
+
+/* Top info bar */
+#info-bar {
+  position: fixed; top: 0; left: 0; right: 0;
+  background: rgba(10, 10, 30, 0.7);
+  backdrop-filter: blur(10px);
+  padding: 8px 20px;
+  font-size: 13px; color: rgba(255,255,255,0.6);
+  display: flex; justify-content: space-between;
+  z-index: 10;
+}
+
+/* Loading overlay */
+#loading {
+  position: fixed; inset: 0;
+  background: #1a1a2e;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  z-index: 100; font-size: 16px;
+}
+#loading .spinner {
+  width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.1);
+  border-top-color: #50b4ff; border-radius: 50%;
+  animation: spin 0.8s linear infinite; margin-bottom: 16px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#loading.hidden { display: none; }
+
+/* Trail toggle */
+#view-options {
+  position: fixed; top: 40px; right: 20px; z-index: 10;
+  display: flex; flex-direction: column; gap: 6px;
+}
+#view-options label {
+  font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  background: rgba(10,10,30,0.7); padding: 4px 10px; border-radius: 4px;
+}
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div>Loading 3D data...</div>
+  <div id="load-status" style="margin-top:8px;font-size:13px;color:rgba(255,255,255,0.4)"></div>
+</div>
+
+<div id="info-bar">
+  <span>3D Tennis Pose Viewer</span>
+  <span>Drag to rotate | Scroll to zoom | Right-drag to pan</span>
+</div>
+
+<div id="view-options">
+  <label><input type="checkbox" id="show-trails" checked> Ball trail</label>
+  <label><input type="checkbox" id="show-shadows" checked> Shadows</label>
+  <label><input type="checkbox" id="auto-orbit"> Auto-orbit</label>
+</div>
+
+<div id="canvas-container"></div>
+
+<div id="controls">
+  <button id="play-btn" title="Play/Pause (Space)">&#9654;</button>
+  <button id="prev-frame" title="Previous frame (Left arrow)">&#9664;</button>
+  <button id="next-frame" title="Next frame (Right arrow)">&#9654;</button>
+  <input type="range" id="timeline" min="0" max="100" value="0">
+  <div id="speed-control">
+    <span>Speed:</span>
+    <select id="speed-select">
+      <option value="0.25">0.25x</option>
+      <option value="0.5">0.5x</option>
+      <option value="1" selected>1x</option>
+      <option value="2">2x</option>
+    </select>
+  </div>
+  <div id="frame-info">Frame 0 / 0</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ─── Globals ───
+let scene, camera, renderer, controls;
+let matchData = null;
+let currentFrame = 0;
+let isPlaying = false;
+let playbackSpeed = 1;
+let lastFrameTime = 0;
+
+// Scene objects
+let playerMeshes = {};  // id -> { joints: [], bones: [], shadow: Mesh }
+let ballMesh, ballTrailLine;
+let ballTrailPositions = [];
+const TRAIL_MAX = 30;
+
+// Colors
+const NEAR_COLOR = new THREE.Color(0x00cc66);  // green
+const FAR_COLOR  = new THREE.Color(0xffaa33);  // gold
+const BALL_COLOR = new THREE.Color(0xffdd00);  // yellow
+const COURT_GREEN = new THREE.Color(0x2d6b3f);
+const COURT_BLUE = new THREE.Color(0x1a4a7a);
+const LINE_WHITE = new THREE.Color(0xffffff);
+
+// ─── Init ───
+function init() {
+  const container = document.getElementById('canvas-container');
+
+  // Renderer
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.2;
+  container.appendChild(renderer.domElement);
+
+  // Scene
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0d1117);
+  scene.fog = new THREE.Fog(0x0d1117, 30, 60);
+
+  // Camera
+  camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(12, 10, 14);
+  camera.lookAt(0, 1, 0);
+
+  // Controls
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 1, 0);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minDistance = 3;
+  controls.maxDistance = 40;
+  controls.maxPolarAngle = Math.PI * 0.48;
+  controls.update();
+
+  // Lights
+  const ambient = new THREE.AmbientLight(0x404060, 0.8);
+  scene.add(ambient);
+
+  const hemi = new THREE.HemisphereLight(0x8899bb, 0x445522, 0.6);
+  scene.add(hemi);
+
+  const dirLight = new THREE.DirectionalLight(0xfff5e0, 1.5);
+  dirLight.position.set(8, 15, 5);
+  dirLight.castShadow = true;
+  dirLight.shadow.mapSize.width = 2048;
+  dirLight.shadow.mapSize.height = 2048;
+  dirLight.shadow.camera.left = -15;
+  dirLight.shadow.camera.right = 15;
+  dirLight.shadow.camera.top = 15;
+  dirLight.shadow.camera.bottom = -15;
+  dirLight.shadow.camera.near = 1;
+  dirLight.shadow.camera.far = 40;
+  dirLight.shadow.bias = -0.001;
+  scene.add(dirLight);
+
+  // Ground plane (extends beyond court)
+  const groundGeo = new THREE.PlaneGeometry(50, 50);
+  const groundMat = new THREE.MeshStandardMaterial({
+    color: 0x1a3320,
+    roughness: 0.9,
+    metalness: 0.0,
+  });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.01;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  buildCourt();
+  createBall();
+  createBallTrail();
+
+  window.addEventListener('resize', onResize);
+}
+
+// ─── Court ───
+function buildCourt() {
+  const W = 10.97;      // court width (doubles)
+  const L = 23.77;      // court length
+  const SW = 8.23;      // singles width
+  const SL_offset = (W - SW) / 2;  // 1.37m
+
+  const halfW = W / 2;
+  const halfL = L / 2;
+
+  // Court surface — two halves with different colors
+  const nearHalfGeo = new THREE.PlaneGeometry(W, L / 2);
+  const nearHalfMat = new THREE.MeshStandardMaterial({ color: COURT_BLUE, roughness: 0.7 });
+  const nearHalf = new THREE.Mesh(nearHalfGeo, nearHalfMat);
+  nearHalf.rotation.x = -Math.PI / 2;
+  nearHalf.position.set(0, 0.001, L / 4);
+  nearHalf.receiveShadow = true;
+  scene.add(nearHalf);
+
+  const farHalfGeo = new THREE.PlaneGeometry(W, L / 2);
+  const farHalfMat = new THREE.MeshStandardMaterial({ color: COURT_GREEN, roughness: 0.7 });
+  const farHalf = new THREE.Mesh(farHalfGeo, farHalfMat);
+  farHalf.rotation.x = -Math.PI / 2;
+  farHalf.position.set(0, 0.001, -L / 4);
+  farHalf.receiveShadow = true;
+  scene.add(farHalf);
+
+  // Court lines
+  const lineMat = new THREE.MeshBasicMaterial({ color: LINE_WHITE });
+  const lineH = 0.003;  // slightly above court
+
+  function addLine(x1, z1, x2, z2, width = 0.05) {
+    const dx = x2 - x1, dz = z2 - z1;
+    const len = Math.sqrt(dx * dx + dz * dz);
+    const geo = new THREE.PlaneGeometry(width, len);
+    const mesh = new THREE.Mesh(geo, lineMat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.rotation.z = -Math.atan2(dx, dz);
+    mesh.position.set((x1 + x2) / 2, lineH, (z1 + z2) / 2);
+    scene.add(mesh);
+  }
+
+  // Baselines
+  addLine(-halfW, -halfL, halfW, -halfL);
+  addLine(-halfW, halfL, halfW, halfL);
+
+  // Doubles sidelines
+  addLine(-halfW, -halfL, -halfW, halfL);
+  addLine(halfW, -halfL, halfW, halfL);
+
+  // Singles sidelines
+  const singleHW = SW / 2;
+  addLine(-singleHW, -halfL, -singleHW, halfL);
+  addLine(singleHW, -halfL, singleHW, halfL);
+
+  // Service lines
+  const serviceL = 6.40;  // distance from net to service line
+  addLine(-singleHW, -serviceL, singleHW, -serviceL);
+  addLine(-singleHW, serviceL, singleHW, serviceL);
+
+  // Center service line
+  addLine(0, -serviceL, 0, serviceL);
+
+  // Center marks on baselines
+  addLine(0, -halfL, 0, -halfL + 0.3);
+  addLine(0, halfL, 0, halfL - 0.3);
+
+  // Net
+  buildNet(halfW);
+}
+
+function buildNet(halfW) {
+  const netH = 1.07;
+  const netW = halfW * 2 + 0.9;  // extends slightly beyond sidelines
+
+  // Net posts
+  const postGeo = new THREE.CylinderGeometry(0.04, 0.04, netH + 0.1);
+  const postMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.5, roughness: 0.3 });
+  const leftPost = new THREE.Mesh(postGeo, postMat);
+  leftPost.position.set(-netW / 2, (netH + 0.1) / 2, 0);
+  leftPost.castShadow = true;
+  scene.add(leftPost);
+  const rightPost = new THREE.Mesh(postGeo, postMat);
+  rightPost.position.set(netW / 2, (netH + 0.1) / 2, 0);
+  rightPost.castShadow = true;
+  scene.add(rightPost);
+
+  // Net mesh (semi-transparent plane)
+  const netGeo = new THREE.PlaneGeometry(netW, netH);
+  const netMat = new THREE.MeshStandardMaterial({
+    color: 0xcccccc,
+    transparent: true,
+    opacity: 0.3,
+    side: THREE.DoubleSide,
+    wireframe: false,
+  });
+  const netMesh = new THREE.Mesh(netGeo, netMat);
+  netMesh.position.set(0, netH / 2, 0);
+  scene.add(netMesh);
+
+  // Top cable
+  const cableGeo = new THREE.CylinderGeometry(0.015, 0.015, netW);
+  const cableMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+  const cable = new THREE.Mesh(cableGeo, cableMat);
+  cable.rotation.z = Math.PI / 2;
+  cable.position.set(0, netH, 0);
+  scene.add(cable);
+}
+
+// ─── Player skeleton ───
+function getOrCreatePlayer(id) {
+  if (playerMeshes[id]) return playerMeshes[id];
+
+  const color = id === 1 ? FAR_COLOR : NEAR_COLOR;
+  const joints = [];
+  const bones = [];
+
+  // 17 joints as spheres
+  const jointGeo = new THREE.SphereGeometry(0.04, 8, 8);
+  // Head joint (index 0) slightly larger
+  const headGeo = new THREE.SphereGeometry(0.08, 12, 12);
+  const jointMat = new THREE.MeshStandardMaterial({
+    color: color,
+    emissive: color,
+    emissiveIntensity: 0.3,
+    roughness: 0.4,
+  });
+
+  for (let i = 0; i < 17; i++) {
+    const mesh = new THREE.Mesh(i === 0 ? headGeo : jointGeo, jointMat);
+    mesh.castShadow = true;
+    mesh.visible = false;
+    scene.add(mesh);
+    joints.push(mesh);
+  }
+
+  // 16 bones as cylinders
+  const boneMat = new THREE.MeshStandardMaterial({
+    color: color,
+    emissive: color,
+    emissiveIntensity: 0.15,
+    roughness: 0.5,
+  });
+
+  for (let i = 0; i < 16; i++) {
+    const geo = new THREE.CylinderGeometry(0.025, 0.025, 1, 6);
+    geo.translate(0, 0.5, 0);  // pivot at base
+    const mesh = new THREE.Mesh(geo, boneMat);
+    mesh.castShadow = true;
+    mesh.visible = false;
+    scene.add(mesh);
+    bones.push(mesh);
+  }
+
+  // Shadow disc on ground
+  const shadowGeo = new THREE.CircleGeometry(0.3, 16);
+  const shadowMat = new THREE.MeshBasicMaterial({
+    color: 0x000000,
+    transparent: true,
+    opacity: 0.25,
+  });
+  const shadow = new THREE.Mesh(shadowGeo, shadowMat);
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.002;
+  shadow.visible = false;
+  scene.add(shadow);
+
+  playerMeshes[id] = { joints, bones, shadow, color };
+  return playerMeshes[id];
+}
+
+function updatePlayer(playerData, connections) {
+  const pm = getOrCreatePlayer(playerData.id);
+  const kps = playerData.keypoints_3d;
+  const conf = playerData.confidence;
+  const showShadows = document.getElementById('show-shadows').checked;
+
+  // Update joints
+  for (let i = 0; i < 17; i++) {
+    if (conf[i] > 0.3) {
+      pm.joints[i].position.set(kps[i][0], kps[i][1], kps[i][2]);
+      pm.joints[i].visible = true;
+    } else {
+      pm.joints[i].visible = false;
+    }
+  }
+
+  // Update bones
+  for (let bi = 0; bi < connections.length; bi++) {
+    const [a, b] = connections[bi];
+    if (conf[a] > 0.3 && conf[b] > 0.3) {
+      const pA = new THREE.Vector3(kps[a][0], kps[a][1], kps[a][2]);
+      const pB = new THREE.Vector3(kps[b][0], kps[b][1], kps[b][2]);
+      const dir = new THREE.Vector3().subVectors(pB, pA);
+      const len = dir.length();
+
+      pm.bones[bi].position.copy(pA);
+      pm.bones[bi].scale.set(1, len, 1);
+
+      // Orient cylinder from A to B
+      const up = new THREE.Vector3(0, 1, 0);
+      const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
+      pm.bones[bi].quaternion.copy(quat);
+      pm.bones[bi].visible = true;
+    } else {
+      pm.bones[bi].visible = false;
+    }
+  }
+
+  // Ground shadow
+  // Find average foot position
+  let footX = 0, footZ = 0, footCount = 0;
+  for (const idx of [15, 16]) {
+    if (conf[idx] > 0.3) {
+      footX += kps[idx][0]; footZ += kps[idx][2];
+      footCount++;
+    }
+  }
+  if (footCount > 0 && showShadows) {
+    pm.shadow.position.set(footX / footCount, 0.002, footZ / footCount);
+    pm.shadow.visible = true;
+  } else {
+    pm.shadow.visible = false;
+  }
+}
+
+function hidePlayer(id) {
+  const pm = playerMeshes[id];
+  if (!pm) return;
+  pm.joints.forEach(j => j.visible = false);
+  pm.bones.forEach(b => b.visible = false);
+  pm.shadow.visible = false;
+}
+
+// ─── Ball ───
+function createBall() {
+  const geo = new THREE.SphereGeometry(0.05, 12, 12);
+  const mat = new THREE.MeshStandardMaterial({
+    color: BALL_COLOR,
+    emissive: BALL_COLOR,
+    emissiveIntensity: 0.5,
+    roughness: 0.3,
+  });
+  ballMesh = new THREE.Mesh(geo, mat);
+  ballMesh.castShadow = true;
+  ballMesh.visible = false;
+  scene.add(ballMesh);
+}
+
+function createBallTrail() {
+  const maxPts = TRAIL_MAX;
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(maxPts * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setDrawRange(0, 0);
+
+  const mat = new THREE.LineBasicMaterial({
+    color: 0xffdd00,
+    transparent: true,
+    opacity: 0.5,
+  });
+  ballTrailLine = new THREE.Line(geo, mat);
+  scene.add(ballTrailLine);
+}
+
+function updateBall(ballPos) {
+  if (!ballPos) {
+    ballMesh.visible = false;
+    return;
+  }
+
+  ballMesh.position.set(ballPos[0], ballPos[1], ballPos[2]);
+  ballMesh.visible = true;
+
+  // Trail
+  const showTrail = document.getElementById('show-trails').checked;
+  ballTrailPositions.push([ballPos[0], ballPos[1], ballPos[2]]);
+  if (ballTrailPositions.length > TRAIL_MAX) {
+    ballTrailPositions.shift();
+  }
+
+  if (showTrail && ballTrailPositions.length >= 2) {
+    const positions = ballTrailLine.geometry.attributes.position.array;
+    for (let i = 0; i < ballTrailPositions.length; i++) {
+      positions[i * 3] = ballTrailPositions[i][0];
+      positions[i * 3 + 1] = ballTrailPositions[i][1];
+      positions[i * 3 + 2] = ballTrailPositions[i][2];
+    }
+    ballTrailLine.geometry.attributes.position.needsUpdate = true;
+    ballTrailLine.geometry.setDrawRange(0, ballTrailPositions.length);
+    ballTrailLine.visible = true;
+  } else {
+    ballTrailLine.visible = false;
+  }
+}
+
+// ─── Frame update ───
+function setFrame(frameIdx) {
+  if (!matchData) return;
+  frameIdx = Math.max(0, Math.min(frameIdx, matchData.total_frames - 1));
+  currentFrame = frameIdx;
+
+  const fd = matchData.frames[frameIdx];
+  const connections = matchData.skeleton_connections;
+
+  // Track which players are present this frame
+  const activeIds = new Set();
+
+  for (const player of fd.players) {
+    activeIds.add(player.id);
+    updatePlayer(player, connections);
+  }
+
+  // Hide players not in this frame
+  for (const id of Object.keys(playerMeshes)) {
+    if (!activeIds.has(Number(id))) {
+      hidePlayer(Number(id));
+    }
+  }
+
+  // Ball
+  updateBall(fd.ball);
+
+  // UI
+  document.getElementById('timeline').value = frameIdx;
+  document.getElementById('frame-info').textContent =
+    `Frame ${frameIdx} / ${matchData.total_frames - 1}`;
+}
+
+// ─── Animation loop ───
+function animate(time) {
+  requestAnimationFrame(animate);
+
+  if (isPlaying && matchData) {
+    const fps = matchData.fps * playbackSpeed;
+    const interval = 1000 / fps;
+    if (time - lastFrameTime >= interval) {
+      lastFrameTime = time;
+      let next = currentFrame + 1;
+      if (next >= matchData.total_frames) {
+        next = 0;
+        ballTrailPositions.length = 0;
+      }
+      setFrame(next);
+    }
+  }
+
+  // Auto-orbit
+  if (document.getElementById('auto-orbit').checked) {
+    const angle = performance.now() * 0.0001;
+    const r = 16;
+    camera.position.x = Math.cos(angle) * r;
+    camera.position.z = Math.sin(angle) * r;
+    camera.position.y = 8;
+    camera.lookAt(controls.target);
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// ─── UI ───
+function setupUI() {
+  const playBtn = document.getElementById('play-btn');
+  const timeline = document.getElementById('timeline');
+  const speedSelect = document.getElementById('speed-select');
+
+  playBtn.addEventListener('click', () => {
+    isPlaying = !isPlaying;
+    playBtn.innerHTML = isPlaying ? '&#9646;&#9646;' : '&#9654;';
+    playBtn.classList.toggle('active', isPlaying);
+  });
+
+  timeline.addEventListener('input', (e) => {
+    setFrame(Number(e.target.value));
+    ballTrailPositions.length = 0;  // reset trail on scrub
+  });
+
+  speedSelect.addEventListener('change', (e) => {
+    playbackSpeed = parseFloat(e.target.value);
+  });
+
+  document.getElementById('prev-frame').addEventListener('click', () => {
+    isPlaying = false;
+    playBtn.innerHTML = '&#9654;';
+    playBtn.classList.remove('active');
+    setFrame(currentFrame - 1);
+  });
+
+  document.getElementById('next-frame').addEventListener('click', () => {
+    isPlaying = false;
+    playBtn.innerHTML = '&#9654;';
+    playBtn.classList.remove('active');
+    setFrame(currentFrame + 1);
+  });
+
+  // Keyboard shortcuts
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      playBtn.click();
+    } else if (e.code === 'ArrowLeft') {
+      e.preventDefault();
+      document.getElementById('prev-frame').click();
+    } else if (e.code === 'ArrowRight') {
+      e.preventDefault();
+      document.getElementById('next-frame').click();
+    } else if (e.code === 'Home') {
+      setFrame(0);
+      ballTrailPositions.length = 0;
+    } else if (e.code === 'End') {
+      setFrame(matchData.total_frames - 1);
+    }
+  });
+}
+
+// ─── Load data ───
+async function loadData() {
+  const status = document.getElementById('load-status');
+
+  // Try loading from same directory or parent directory
+  let data = null;
+  const paths = ['../tennis_match_3d.json', 'tennis_match_3d.json', './data.json'];
+
+  for (const path of paths) {
+    try {
+      status.textContent = `Trying ${path}...`;
+      const resp = await fetch(path);
+      if (resp.ok) {
+        data = await resp.json();
+        status.textContent = `Loaded from ${path}`;
+        break;
+      }
+    } catch (e) {
+      // try next
+    }
+  }
+
+  if (!data) {
+    status.textContent = 'Error: Could not find tennis_match_3d.json. Run export_3d_data.py first.';
+    return;
+  }
+
+  matchData = data;
+
+  // Setup timeline
+  document.getElementById('timeline').max = data.total_frames - 1;
+
+  // Hide loading overlay
+  document.getElementById('loading').classList.add('hidden');
+
+  // Set first frame
+  setFrame(0);
+}
+
+// ─── Resize ───
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ─── Main ───
+init();
+setupUI();
+animate(0);
+loadData();
+
+</script>
+</body>
+</html>
